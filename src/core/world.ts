@@ -3,11 +3,12 @@ import {
   makeEntity,
   makeRifle,
   dist,
+  sideOf,
   type Entity,
   type Bullet,
 } from './entity';
 import {
-  generateArena,
+  generateMap,
   nearestFloor,
   tileCenter,
   lineOfSight,
@@ -44,9 +45,9 @@ export interface WorldOptions {
 }
 
 export function createWorld(seed: number, opts: WorldOptions = {}): World {
-  const { mapW = 40, mapH = 30, allies = 3, enemies = 4 } = opts;
+  const { mapW = 64, mapH = 48, allies = 3, enemies = 4 } = opts;
   const rng = new SeededRNG(seed);
-  const map = generateArena(mapW, mapH, rng);
+  const map = generateMap(mapW, mapH, rng);
 
   const world: World = {
     tick: 0,
@@ -67,9 +68,15 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
     return e;
   };
 
-  spawn('player', 3, Math.floor(mapH / 2));
-  for (let i = 0; i < allies; i++) spawn('ally', 3 + (i % 2), 3 + i * 3);
-  for (let i = 0; i < enemies; i++) spawn('enemy', mapW - 4 - (i % 2), 3 + i * 3);
+  // Squads deploy from opposite edges, spread down the map.
+  const midY = Math.floor(mapH / 2);
+  spawn('player', 3, midY);
+  for (let i = 0; i < allies; i++) {
+    spawn('ally', 3 + (i % 2), midY - 6 + i * 5);
+  }
+  for (let i = 0; i < enemies; i++) {
+    spawn('enemy', mapW - 4 - (i % 2), midY - 8 + i * 5);
+  }
 
   return world;
 }
@@ -80,9 +87,7 @@ export function getEntity(w: World, id: number | null): Entity | null {
 }
 
 export function isHostile(a: Entity, b: Entity): boolean {
-  const aSide = a.team === 'enemy' ? 1 : 0;
-  const bSide = b.team === 'enemy' ? 1 : 0;
-  return aSide !== bSide;
+  return sideOf(a.team) !== sideOf(b.team);
 }
 
 export function nearestVisibleEnemy(w: World, e: Entity): Entity | null {

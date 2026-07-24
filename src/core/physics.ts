@@ -1,4 +1,4 @@
-import type { Entity, Bullet, Vec2 } from './entity';
+import { sideOf, type Entity, type Bullet, type Vec2 } from './entity';
 import { isWallAt, type GameMap } from './map';
 
 /** Circle-vs-tile test at eight points around the entity's hull. */
@@ -70,7 +70,7 @@ export function stepBullets(
       }
 
       for (const e of entities) {
-        if (!e.alive || e.id === b.ownerId || e.team === b.team) continue;
+        if (!e.alive || e.id === b.ownerId || sideOf(e.team) === sideOf(b.team)) continue;
         const d = Math.hypot(e.pos.x - b.pos.x, e.pos.y - b.pos.y);
         if (d <= e.radius) {
           hits.push({ bullet: b, victim: e });

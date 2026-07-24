@@ -5,6 +5,10 @@ export interface Vec2 {
 
 export type Team = 'player' | 'ally' | 'enemy';
 
+export function sideOf(t: Team): 0 | 1 {
+  return t === 'enemy' ? 1 : 0;
+}
+
 /** v0 bot states. The behaviour tree in ai/ replaces this in v1. */
 export type BotState = 'idle' | 'chase' | 'shoot' | 'reload' | 'retreat';
 
