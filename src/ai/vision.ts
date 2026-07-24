@@ -2,7 +2,7 @@ import { lineOfSight, isWallTile, tileCenter, TILE, type GameMap } from '../core
 import { dist, type Entity, type Vec2 } from '../core/entity';
 import { isHostile, type World } from '../core/world';
 
-export const SIGHT_RANGE = 520;
+export const SIGHT_RANGE = 430;
 
 export function canSee(map: GameMap, from: Vec2, to: Vec2, range = SIGHT_RANGE): boolean {
   if (dist(from, to) > range) return false;

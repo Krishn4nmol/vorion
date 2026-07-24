@@ -1,4 +1,4 @@
-import { dist, angleTo, type Entity, type Vec2 } from '../core/entity';
+import { dist, angleTo, sideOf, type Entity, type Order, type Vec2 } from '../core/entity';
 import {
   fire,
   startReload,
@@ -17,6 +17,8 @@ const PREFERRED_RANGE = 240; // px — bots try to fight from about here
 const RETREAT_HP = 30;
 const RETREAT_TICKS = 180;
 const STALEMATE_TICKS = 600; // no damage anywhere for this long -> everyone charges
+const ARRIVED = 40; // px, close enough to consider a move order complete
+const SUPPRESS_HOLD = 300; // px, how far a suppressing unit will push toward its mark
 
 /** Walks the entity along entity.path, returns true while still travelling. */
 function followPath(e: Entity): boolean {
@@ -54,10 +56,118 @@ function nearestHostile(w: World, e: Entity): Entity | null {
   return best;
 }
 
+/** Mean position of this unit's living squadmates. */
+function squadCentroid(w: World, e: Entity): Vec2 | null {
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const o of w.entities) {
+    if (!o.alive || o.id === e.id || sideOf(o.team) !== sideOf(e.team)) continue;
+    sx += o.pos.x;
+    sy += o.pos.y;
+    n++;
+  }
+  return n === 0 ? null : { x: sx / n, y: sy / n };
+}
+
+/** Direction away from every hostile this unit can currently see. */
+function awayFromThreats(w: World, e: Entity): Vec2 {
+  let dx = 0;
+  let dy = 0;
+  for (const o of w.entities) {
+    if (!o.alive || !isHostile(e, o)) continue;
+    const d = Math.max(1, dist(e.pos, o.pos));
+    dx += (e.pos.x - o.pos.x) / d;
+    dy += (e.pos.y - o.pos.y) / d;
+  }
+  const len = Math.hypot(dx, dy) || 1;
+  return { x: e.pos.x + (dx / len) * 200, y: e.pos.y + (dy / len) * 200 };
+}
+
 /**
- * v0 rule-based bot. Deliberately competent but uncoordinated — each bot
- * fights alone. This is the baseline the LLM-commanded squads are measured
- * against in v2, so it should be decent, not stupid.
+ * Carries out the movement half of an order. Returns false if the order is
+ * finished or impossible, in which case the caller falls back to autonomy.
+ *
+ * Orders decide WHERE a unit should be. They never decide when to shoot, when
+ * to reload, or whether to break contact — those stay with the behaviour tree,
+ * which runs every tick instead of every few seconds.
+ */
+function executeOrder(w: World, e: Entity, order: Order, target: Entity | null): boolean {
+  switch (order.kind) {
+    case 'advance_to':
+    case 'flank': {
+      if (!order.target) return false;
+      if (dist(e.pos, order.target) <= ARRIVED) return false; // arrived
+      e.state = 'chase';
+      setDestination(w, e, order.target);
+      followPath(e);
+      return true;
+    }
+
+    case 'regroup': {
+      const c = squadCentroid(w, e);
+      if (!c || dist(e.pos, c) <= ARRIVED * 2) return false;
+      e.state = 'chase';
+      setDestination(w, e, c);
+      followPath(e);
+      return true;
+    }
+
+    case 'retreat': {
+      const dest = target ? findCover(w.map, e.pos, target.pos) : null;
+      setDestination(w, e, dest ?? awayFromThreats(w, e));
+      e.state = 'retreat';
+      followPath(e);
+      return true;
+    }
+
+    case 'suppress': {
+      if (!order.target) return false;
+      const d = dist(e.pos, order.target);
+      // Close until the mark is within effective range, then hold and shoot.
+      if (d > SUPPRESS_HOLD) {
+        e.state = 'chase';
+        setDestination(w, e, order.target);
+        followPath(e);
+        return true;
+      }
+      // In position but nothing visible: the mark has moved or died. Standing
+      // in the open firing at a memory is how ordered squads get wiped, so the
+      // order is considered complete and the unit resumes hunting.
+      if (!target) return false;
+      const cover = findCover(w.map, e.pos, target.pos, 3);
+      if (cover && dist(e.pos, cover) > ARRIVED) {
+        setDestination(w, e, cover);
+        followPath(e);
+      } else {
+        e.path = [];
+      }
+      e.state = 'shoot';
+      return true;
+    }
+
+    case 'hold': {
+      // Standing still in the open is how ordered squads die. Take cover from
+      // whatever is currently threatening, but do not leave the position.
+      if (target) {
+        const cover = findCover(w.map, e.pos, target.pos, 3);
+        if (cover && dist(e.pos, cover) > ARRIVED) {
+          setDestination(w, e, cover);
+          followPath(e);
+          e.state = 'shoot';
+          return true;
+        }
+      }
+      e.path = [];
+      e.state = 'shoot';
+      return true;
+    }
+  }
+}
+
+/**
+ * Rule-based bot, now order-aware. With no orders it behaves exactly as the v0
+ * baseline — that equivalence is what makes the v2 comparison meaningful.
  */
 export function makeBotController(): Controller {
   const retreatUntil = new Map<number, number>();
@@ -99,15 +209,21 @@ export function makeBotController(): Controller {
 
     const target = acquireTarget(w, e);
     const until = retreatUntil.get(e.id) ?? 0;
+    const order = e.order && w.tick < e.order.expiresTick ? e.order : null;
+    if (e.order && !order) e.order = null; // expired
 
     // --- retreat -----------------------------------------------------------
-    if (!aggressive && e.hp <= RETREAT_HP && target && w.tick >= until) {
+    // Only an explicit 'hold' makes a unit stand its ground while wounded, and
+    // even then executeOrder puts it in cover. Everything else yields to
+    // survival — an order that gets your unit killed served nobody.
+    const orderOverridesRetreat = order?.kind === 'hold';
+    if (!aggressive && !orderOverridesRetreat && e.hp <= RETREAT_HP && target && w.tick >= until) {
       retreatUntil.set(e.id, w.tick + RETREAT_TICKS);
       const cover = findCover(w.map, e.pos, target.pos);
       if (cover) setDestination(w, e, cover);
     }
 
-    if (!aggressive && w.tick < until) {
+    if (!aggressive && !orderOverridesRetreat && w.tick < until) {
       e.state = 'retreat';
       const moving = followPath(e);
       if (target) {
@@ -116,6 +232,29 @@ export function makeBotController(): Controller {
       }
       if (!moving && !target) retreatUntil.set(e.id, 0); // safe, resume
       return;
+    }
+
+    // --- ordered movement ---------------------------------------------------
+    // Runs before autonomous engagement so a unit under orders keeps shooting
+    // at whatever it sees without abandoning where it was told to go.
+    if (order && !aggressive) {
+      const moving = executeOrder(w, e, order, target);
+      if (moving) {
+        if (target) {
+          e.targetId = target.id;
+          e.aim = aimWithLead(e, target, wp.bulletSpeed);
+          const lane = hasFiringLane(w.map, e.pos, target.pos, e.radius);
+          // A flanking unit avoids picking long-range fights it was sent to
+          // avoid, but always returns fire on anything close enough to hurt it.
+          const engageRange =
+            order.kind === 'flank' ? PREFERRED_RANGE : e.weapon.range;
+          if (canFire(w, e) && lane && dist(e.pos, target.pos) <= engageRange) {
+            fire(w, e, e.aim);
+          }
+        }
+        return;
+      }
+      e.order = null; // order complete or impossible — resume autonomy
     }
 
     // --- engage ------------------------------------------------------------
