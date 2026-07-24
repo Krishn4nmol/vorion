@@ -157,6 +157,8 @@ export type Controller = (w: World, e: Entity) => void;
 export function step(w: World, controllers: Map<number, Controller>): void {
   w.events.length = 0;
 
+  finishReloads(w);
+
   for (const e of w.entities) {
     if (!e.alive) continue;
     e.vel.x = 0;
@@ -192,8 +194,6 @@ export function step(w: World, controllers: Map<number, Controller>): void {
       });
     }
   }
-
-  finishReloads(w);
 
   const friendliesLeft = w.entities.some((e) => e.alive && e.team !== 'enemy');
   const enemiesLeft = w.entities.some((e) => e.alive && e.team === 'enemy');
