@@ -1,4 +1,4 @@
-import { TILE, isWallTile, type GameMap } from '../../core/map';
+import { TILE, isWallTile, nearestFloor, type GameMap } from '../../core/map';
 import { sideOf, type Order, type OrderKind, type Vec2 } from '../../core/entity';
 import type { World } from '../../core/world';
 import { findPath } from '../pathfinding';
@@ -43,7 +43,12 @@ export interface Rejection {
 export interface ValidationResult {
   accepted: { unitId: number; order: Order; reason: string }[];
   rejected: Rejection[];
+  /** Orders whose coordinates were nudged onto a walkable tile. */
+  snapped: number;
 }
+
+/** How far a wall coordinate may be nudged, in tiles, before it is rejected. */
+export const SNAP_RADIUS = 4;
 
 /** Included verbatim in the system prompt so the schema has one source of truth. */
 export const ORDER_SCHEMA_DOC = `Reply with ONLY a JSON array, no prose, no markdown fences.
@@ -93,9 +98,10 @@ export function validateOrders(
 ): ValidationResult {
   const accepted: ValidationResult['accepted'] = [];
   const rejected: Rejection[] = [];
+  let snapped = 0;
 
   if (!Array.isArray(raw)) {
-    return { accepted, rejected: [{ raw, reason: 'not a JSON array' }] };
+    return { accepted, rejected: [{ raw, reason: 'not a JSON array' }], snapped };
   }
 
   const squad = w.entities.filter((e) => e.alive && sideOf(e.team) === k.side);
@@ -138,13 +144,25 @@ export function validateOrders(
         rejected.push({ raw: item, reason: `${kind} needs numeric x,y` });
         continue;
       }
+      // The prompt tells the model nothing about which tiles are walkable, so
+      // a computed coordinate can land in a wall. Snapping to the nearest open
+      // tile preserves the intent; only a coordinate with no open tile nearby
+      // is a genuine error worth rejecting.
+      let fx = tx;
+      let fy = ty;
       if (!walkable(w.map, tx, ty)) {
-        rejected.push({ raw: item, reason: `tile (${tx},${ty}) is a wall or off-map` });
-        continue;
+        const near = nearestFloor(w.map, tx, ty);
+        if (Math.hypot(near.x - tx, near.y - ty) > SNAP_RADIUS) {
+          rejected.push({ raw: item, reason: `tile (${tx},${ty}) is a wall or off-map` });
+          continue;
+        }
+        fx = near.x;
+        fy = near.y;
+        snapped++;
       }
-      target = tileToWorld(tx, ty);
+      target = tileToWorld(fx, fy);
       if (checkReachable && findPath(w.map, unit.pos, target).length === 0) {
-        rejected.push({ raw: item, reason: `no path from unit ${unitId} to (${tx},${ty})` });
+        rejected.push({ raw: item, reason: `no path from unit ${unitId} to (${fx},${fy})` });
         continue;
       }
     }
@@ -187,7 +205,7 @@ export function validateOrders(
     });
   }
 
-  return { accepted, rejected };
+  return { accepted, rejected, snapped};
 }
 
 /** Writes validated orders onto the entities. The only mutation this module does. */

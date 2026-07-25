@@ -74,12 +74,21 @@ export async function askGemini(
     },
   };
 
-  const res = await fetch(`${BASE}/models/${model}:generateContent?key=${key}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+  // Without an abort the socket can hang indefinitely; Promise.race only stops
+  // waiting, it does not cancel the request.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 30000);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/models/${model}:generateContent?key=${key}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: opts.signal ?? ctl.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   if (!res.ok) {
     const detail = await res.text();

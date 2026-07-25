@@ -33,6 +33,8 @@ export interface CommanderOptions {
    */
   mode?: 'async' | 'blocking';
   trace?: boolean;
+  /** Override the doctrine prompt — used to A/B versions in the eval. */
+  system?: string;
 }
 
 export class Commander {
@@ -52,6 +54,7 @@ export class Commander {
   private failures = 0;
   private nextAllowedTick = 0;
   private lastCallTick = -Infinity;
+  private system: string;
 
   constructor(knowledge: SquadKnowledge, ask: AskFn, opts: CommanderOptions = {}) {
     this.knowledge = knowledge;
@@ -61,6 +64,7 @@ export class Commander {
     this.timeoutMs = opts.timeoutMs ?? 4000;
     this.mode = opts.mode ?? 'async';
     this.keepTrace = opts.trace ?? true;
+    this.system = opts.system ?? SYSTEM_PROMPT;
   }
 
   get callCount(): number {
@@ -116,7 +120,7 @@ export class Commander {
 
   private async request(user: string): Promise<string> {
     return await Promise.race([
-      this.ask(SYSTEM_PROMPT, user),
+      this.ask(this.system, user),
       new Promise<string>((_, reject) =>
         setTimeout(() => reject(new Error('commander timeout')), this.timeoutMs),
       ),
