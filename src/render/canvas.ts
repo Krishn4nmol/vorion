@@ -54,6 +54,20 @@ export interface RenderState {
   zoom: number; // device px per world unit
   dpr: number;
   anims: Map<number, AnimState>; // per-entity walk cycles; render-side only
+  commander: CommanderView | null; // set by main.ts each frame
+  showCommander: boolean;
+}
+
+/** What the HUD knows about the AI commander. Purely presentational. */
+export interface CommanderView {
+  enabled: boolean;
+  thinking: boolean;
+  calls: number;
+  model: string;
+  lastTick: number;
+  currentTick: number;
+  orders: { unitId: number; kind: string; reason: string }[];
+  error: string | null;
 }
 
 export function createRenderState(): RenderState {
@@ -65,6 +79,8 @@ export function createRenderState(): RenderState {
     zoom: 1,
     dpr: 1,
     anims: new Map(),
+    commander: null,
+    showCommander: true,
   };
 }
 
@@ -239,6 +255,36 @@ export function render(
       ctx.globalAlpha = 1;
     }
 
+    // Order indicator. Only for units the player can actually see, so the
+    // overlay never leaks enemy positions through the fog.
+    const me = w.entities.find((x) => x.id === followId);
+    const visible =
+      !me || !me.alive || e.id === followId || lineOfSight(w.map, me.pos, e.pos);
+    if (e.order && visible && rs.showCommander) {
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = col;
+      ctx.setLineDash([4, 5]);
+      ctx.lineWidth = 1.5;
+      if (e.order.target) {
+        ctx.beginPath();
+        ctx.moveTo(e.pos.x, e.pos.y);
+        ctx.lineTo(e.order.target.x, e.order.target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(e.order.target.x, e.order.target.y, 7, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 0.75;
+      ctx.fillStyle = col;
+      ctx.font = '9px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(e.order.kind.toUpperCase(), e.pos.x, e.pos.y + 22);
+      ctx.restore();
+    }
+
     drawSoldier(ctx, e, col, anim, e.weapon.reloadEndTick > w.tick);
 
     // health bar
@@ -345,7 +391,7 @@ function drawHud(
   ctx.fillText(`FRIENDLY ${friendlies}`, W - 90, 22);
   ctx.fillStyle = C.enemy;
   ctx.fillText(`HOSTILE ${hostiles}`, W - 14, 22);
-
+  drawCommanderPanel(ctx, rs, W);
   const baseY = H - 26;
   ctx.textAlign = 'left';
 
@@ -411,4 +457,62 @@ function drawHud(
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+}
+
+/**
+ * The commander panel is the whole point of the project made visible: what the
+ * model decided, and why, in its own words. Reasons come straight from the
+ * validated orders, so nothing here is invented by the UI.
+ */
+function drawCommanderPanel(ctx: CanvasRenderingContext2D, rs: RenderState, W: number): void {
+  const c = rs.commander;
+  if (!c || !rs.showCommander) return;
+
+  const x = W - 250;
+  let y = 46;
+  const mono = 'ui-monospace, "Cascadia Mono", Consolas, monospace';
+
+  ctx.textAlign = 'left';
+  ctx.font = '10px ' + mono;
+
+  ctx.fillStyle = c.enabled ? C.enemy : C.hudDim;
+  const status = !c.enabled
+    ? 'OFF'
+    : c.error
+      ? 'ERROR'
+      : c.thinking
+        ? 'THINKING…'
+        : 'STANDING BY';
+  ctx.fillText(`HOSTILE COMMANDER — ${status}`, x, y);
+  y += 13;
+
+  ctx.fillStyle = C.hudDim;
+  ctx.font = '9px ' + mono;
+  const age = c.lastTick ? ` · ${Math.round((c.currentTick - c.lastTick) / 60)}s ago` : '';
+  ctx.fillText(`${c.model}   ${c.calls} calls${age}`, x, y);
+  y += 14;
+
+  if (c.error) {
+    ctx.fillStyle = C.danger;
+    ctx.fillText(c.error.slice(0, 40), x, y);
+    y += 12;
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText('squad reverted to autonomous', x, y);
+    return;
+  }
+
+  if (c.orders.length === 0) {
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText('no orders issued', x, y);
+    return;
+  }
+
+  ctx.font = '9px ' + mono;
+  for (const o of c.orders.slice(0, 5)) {
+    ctx.fillStyle = C.enemy;
+    ctx.fillText(`#${o.unitId} ${o.kind}`, x, y);
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText(`"${o.reason}"`.slice(0, 42), x + 8, y + 10);
+    y += 23;
+  }
 }

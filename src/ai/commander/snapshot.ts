@@ -159,7 +159,7 @@ export function toPrompt(s: Snapshot, mapW: number, mapH: number): string {
   lines.push('YOUR SQUAD:');
   for (const m of s.squad) {
     lines.push(
-      `  #${m.id} hp${m.hp} ammo${m.ammo} at (${m.tile.x},${m.tile.y}) ${m.where}` +
+      `  UNIT #${m.id} hp${m.hp} ammo${m.ammo} at (${m.tile.x},${m.tile.y}) ${m.where}` +
         ` | ${m.engaged ? 'IN CONTACT' : 'no contact'} | doing: ${m.currentOrder}`,
     );
   }
@@ -172,7 +172,7 @@ export function toPrompt(s: Snapshot, mapW: number, mapH: number): string {
     for (const c of s.contacts) {
       const age = s.tick - c.lastSeenTick;
       lines.push(
-        `  #${c.id} hp${c.hp} last seen ${age} ticks ago at (${c.tile.x},${c.tile.y}) ${c.where}` +
+        `  ENEMY #${c.id} hp${c.hp} last seen ${age} ticks ago at (${c.tile.x},${c.tile.y}) ${c.where}` +
           (c.stale ? ' [STALE]' : ''),
       );
     }

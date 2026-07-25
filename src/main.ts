@@ -2,10 +2,21 @@ import { createWorld, step, fire, startReload, canFire, type Controller, type Wo
 import { makeBotController } from './ai/behaviour';
 import { createRenderState, render, ingestEvents, screenToWorld } from './render/canvas';
 import { attachInput, moveAxis, type InputState } from './input';
+import { Commander } from './ai/commander/runtime';
+import { createKnowledge } from './ai/commander/snapshot';
+import { createBrowserAsk } from './ai/commander/browserAsk';
 import './style.css';
 
 const TICK_MS = 1000 / 60;
-const MAX_CATCHUP = 5; // never simulate more than this many ticks per frame
+const MAX_CATCHUP = 5;
+
+/**
+ * 7 seconds between decisions. Two constraints set this: free-tier rate limits
+ * (~10-15 requests/minute) and the fact that orders that change faster than
+ * units can carry them out are just noise.
+ */
+const COMMAND_INTERVAL_TICKS = 150;
+const MODEL = 'gemini-3.5-flash-lite';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
@@ -24,14 +35,12 @@ window.addEventListener('resize', resize);
 
 let wantReload = false;
 
-/** Translates raw input into the same Controller shape the bots use. */
 function makePlayerController(inp: InputState): Controller {
   return (w, e) => {
     const ax = moveAxis(inp.keys);
     e.vel.x = ax.x * e.speed;
     e.vel.y = ax.y * e.speed;
 
-    // Screen -> world: undo the camera translation and zoom.
     const m = screenToWorld(rs, inp.mouseX, inp.mouseY);
     e.aim = Math.atan2(m.y - e.pos.y, m.x - e.pos.x);
 
@@ -46,6 +55,10 @@ function makePlayerController(inp: InputState): Controller {
 let world: World;
 let controllers: Map<number, Controller>;
 let playerId: number;
+let commander: Commander | null = null;
+let commanderEnabled = true;
+
+const ask = createBrowserAsk(MODEL);
 
 function newMatch(seed = Math.floor(Math.random() * 1e9)): void {
   world = createWorld(seed);
@@ -57,8 +70,40 @@ function newMatch(seed = Math.floor(Math.random() * 1e9)): void {
   for (const e of world.entities) {
     controllers.set(e.id, e.id === playerId ? player : bot);
   }
+
+  // Side 1 is the hostile squad. The player's allies stay autonomous, so the
+  // comparison the player experiences is coordinated vs uncoordinated.
+  commander = commanderEnabled
+    ? new Commander(createKnowledge(1), ask, {
+        intervalTicks: COMMAND_INTERVAL_TICKS,
+        mode: 'async',
+        maxCalls: 60,
+        timeoutMs: 6000,
+      })
+    : null;
+
   rs.camera.x = world.entities[0].pos.x;
   rs.camera.y = world.entities[0].pos.y;
+}
+
+function syncCommanderView(): void {
+  if (!commander) {
+    rs.commander = commanderEnabled
+      ? null
+      : { enabled: false, thinking: false, calls: 0, model: MODEL, lastTick: 0, currentTick: world.tick, orders: [], error: null };
+    return;
+  }
+  const last = commander.lastDecision;
+  rs.commander = {
+    enabled: true,
+    thinking: commander.thinking,
+    calls: commander.callCount,
+    model: MODEL,
+    lastTick: last?.tick ?? 0,
+    currentTick: world.tick,
+    orders: last?.accepted ?? [],
+    error: last?.error ?? null,
+  };
 }
 
 resize();
@@ -71,12 +116,18 @@ function frame(now: number): void {
   acc += now - last;
   last = now;
 
-  // R reloads mid-match; once the match is decided (or you're dead) it restarts.
   if (input.consumePress('r')) {
     const me = world.entities.find((e) => e.id === playerId);
     if (world.over || !me || !me.alive) newMatch();
     else wantReload = true;
   }
+
+  // C toggles the commander between matches; O hides the overlay.
+  if (input.consumePress('c')) {
+    commanderEnabled = !commanderEnabled;
+    newMatch();
+  }
+  if (input.consumePress('o')) rs.showCommander = !rs.showCommander;
 
   let steps = 0;
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
@@ -85,10 +136,13 @@ function frame(now: number): void {
     if (!world.over) {
       step(world, controllers);
       ingestEvents(rs, world, world.events);
+      // Fire-and-forget: async mode never blocks the render loop.
+      commander?.update(world);
     }
   }
-  if (acc > TICK_MS * 10) acc = 0; // tab was backgrounded; don't fast-forward
+  if (acc > TICK_MS * 10) acc = 0;
 
+  syncCommanderView();
   render(ctx, world, rs, playerId);
   requestAnimationFrame(frame);
 }
