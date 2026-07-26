@@ -26,5 +26,3 @@ dist-ssr
 # Secrets
 .env
 .env.local
-eval-results.jsonl
-eval-traces.jsonl

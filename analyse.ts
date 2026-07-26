@@ -125,8 +125,11 @@ function main(): void {
     );
   }
 
-  const llm = byArm.get('llm') ?? [];
-  for (const base of ['none', 'scripted']) {
+  for (const [target, base] of [
+    ['llm', 'none'], ['llm', 'scripted'],
+    ['llm2', 'none'], ['llm2', 'scripted'], ['llm2', 'llm'],
+  ] as const) {
+    const llm = byArm.get(target) ?? [];
     const other = byArm.get(base) ?? [];
     const byS = new Map(other.map((r) => [r.seed, r.ticks]));
     const pairs: [number, number][] = [];
@@ -137,7 +140,7 @@ function main(): void {
     const w = wilcoxon(pairs);
     const longer = pairs.filter(([a, b]) => b > a).length;
     console.log(
-      `  llm vs ${base.padEnd(8)} llm longer in ${longer}/${pairs.length} paired matches` +
+      `  ${target} vs ${base.padEnd(8)} llm longer in ${longer}/${pairs.length} paired matches` +
         `  (Wilcoxon z=${w.z.toFixed(2)}, p=${w.p})`,
     );
   }
