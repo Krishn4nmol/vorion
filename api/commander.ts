@@ -1,4 +1,4 @@
-import { askGemini } from './gemini';
+import { askGemini } from '../lib/gemini';
 
 /**
  * Public endpoint. Once deployed this is reachable by anyone, so it is capped

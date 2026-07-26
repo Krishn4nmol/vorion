@@ -4,7 +4,7 @@ import { makeBotController } from './src/ai/behaviour';
 import { createKnowledge, updateKnowledge, buildSnapshot } from './src/ai/commander/snapshot';
 import { buildUserPrompt, SYSTEM_PROMPT } from './src/ai/commander/prompt';
 import { extractJson, validateOrders } from './src/ai/commander/orders';
-import { askGemini } from './api/gemini';
+import { askGemini } from './lib/gemini';
 
 async function main() {
   const w = createWorld(31);

@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { defineConfig, type Plugin } from 'vite';
-import { askGemini } from './api/gemini';
+import { askGemini } from './lib/gemini';
 
 /**
  * Vite does not execute the /api folder in dev, so the same Gemini caller is

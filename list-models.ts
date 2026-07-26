@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { listModels } from './api/gemini';
+import { listModels } from './lib/gemini';
 
 async function main() {
   const models = await listModels();

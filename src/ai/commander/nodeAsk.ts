@@ -1,5 +1,5 @@
 import type { AskFn } from './runtime';
-import { askGemini } from '../../../api/gemini';
+import { askGemini } from '../../../lib/gemini';
 
 /**
  * Server-side transport for the eval harness. Calls Gemini directly rather
