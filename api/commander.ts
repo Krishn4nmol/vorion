@@ -14,7 +14,7 @@ import { askGemini } from '../lib/gemini.js';
 
 const PER_IP_LIMIT = 40; // calls
 const PER_IP_WINDOW_MS = 10 * 60 * 1000;
-const DAILY_LIMIT = 700; // leaves headroom under the free tier
+const DAILY_LIMIT = 400; // leaves headroom under the free tier
 
 const ipHits = new Map<string, number[]>();
 let dayStamp = '';

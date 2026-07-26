@@ -10,7 +10,7 @@ import { askGemini } from '../../../lib/gemini';
  * 15 requests/minute, and a 429 mid-eval would silently turn LLM matches into
  * no-commander matches and corrupt the result.
  */
-export function createNodeAsk(model: string, minGapMs = 4200): AskFn {
+export function createNodeAsk(model: string, minGapMs = 5000): AskFn {
   let nextSlot = 0;
 
   return async (system, user) => {

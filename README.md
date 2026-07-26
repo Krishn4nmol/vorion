@@ -1,5 +1,7 @@
 # VØRIØN
 
+**[Play it →](https://playvorion.vercel.app)**
+
 A top-down tactical shooter where enemy squads are commanded by an LLM — and a
 measurement of whether that actually helps.
 
@@ -187,8 +189,8 @@ npx tsx analyse.ts       # order mix, rejections, duration tests
 ```
 
 Results append to `eval-results.jsonl` and `eval-traces.jsonl`, both committed
-here. Runs are checkpointed and resumable — free-tier quota is roughly 250
-matches per day.
+here. Runs are checkpointed and resumable — free-tier quota is 500 requests
+per day, roughly 100 matches.
 
 ---
 

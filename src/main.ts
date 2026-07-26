@@ -18,7 +18,7 @@ const MAX_CATCHUP = 5;
  * (~10-15 requests/minute) and the fact that orders that change faster than
  * units can carry them out are just noise.
  */
-const COMMAND_INTERVAL_TICKS = 150;
+const COMMAND_INTERVAL_TICKS = 300;
 /** Matches the audio engine's MAX_DIST: if you can hear it, you can map it. */
 const HEARING_RANGE = 1400;
 const MODEL = 'gemini-3.5-flash-lite';
