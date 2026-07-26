@@ -1,12 +1,12 @@
 import { createWorld, step, fire, startReload, canFire, type Controller, type World } from './core/world';
 import { makeBotController } from './ai/behaviour';
-import { createRenderState, render, ingestEvents, screenToWorld } from './render/canvas';
+import { createRenderState, render, ingestEvents, screenToWorld, VIEW_H } from './render/canvas';
 import { attachInput, moveAxis, type InputState } from './input';
 import { Commander } from './ai/commander/runtime';
-import { createKnowledge } from './ai/commander/snapshot';
 import { createBrowserAsk } from './ai/commander/browserAsk';
 import './style.css';
 import { AudioEngine } from './render/audio';
+import { createKnowledge, updateKnowledge, markHeard } from './ai/commander/snapshot';
 
 const TICK_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
@@ -17,6 +17,8 @@ const MAX_CATCHUP = 5;
  * units can carry them out are just noise.
  */
 const COMMAND_INTERVAL_TICKS = 150;
+/** Matches the audio engine's MAX_DIST: if you can hear it, you can map it. */
+const HEARING_RANGE = 1400;
 const MODEL = 'gemini-3.5-flash-lite';
 
 const canvas = document.getElementById('game') as HTMLCanvasElement;
@@ -90,6 +92,9 @@ function newMatch(seed = Math.floor(Math.random() * 1e9)): void {
       })
     : null;
 
+  // The player's side tracks contacts too — not to command with, but so the
+  // minimap can respect fog of war instead of revealing the whole map.
+  rs.knowledge = createKnowledge(0);
   rs.camera.x = world.entities[0].pos.x;
   rs.camera.y = world.entities[0].pos.y;
 }
@@ -139,6 +144,8 @@ function frame(now: number): void {
 
   if (input.consumePress('m')) rs.muted = audio.toggleMute();
 
+  if (input.consumePress('n')) rs.showMinimap = !rs.showMinimap;
+
   let steps = 0;
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
     acc -= TICK_MS;
@@ -148,6 +155,19 @@ function frame(now: number): void {
       ingestEvents(rs, world, world.events);
       // Fire-and-forget: async mode never blocks the render loop.
       audio.ingest(world, rs, world.events, playerId, canvas.width / rs.zoom);
+      // Line-of-sight checks are cheap but not free; six times a second is
+      // well past what the eye can follow on a 176px map.
+      if (rs.knowledge) {
+        // Muzzle flashes are checked every tick — a single shot is one event
+        // and missing it would lose the contact entirely.
+        markHeard(world, rs.knowledge, world.events, HEARING_RANGE);
+        // Line-of-sight is cheap but not free; six times a second is well past
+        // what the eye can follow on a 176px map.
+        if (world.tick % 10 === 0) {
+          const halfDiag = Math.hypot(canvas.width / rs.zoom, VIEW_H) / 2;
+          updateKnowledge(world, rs.knowledge, halfDiag);
+        }
+      }
       commander?.update(world);
     }
   }

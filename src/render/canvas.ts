@@ -12,6 +12,7 @@ import {
 import { dist, type Entity } from '../core/entity';
 import { isHostile, type World, type GameEvent } from '../core/world';
 import { drawSoldier, drawCorpse, stepAnim, type AnimState } from './soldier';
+import type { SquadKnowledge } from '../ai/commander/snapshot';
 
 /**
  * Palette. Cold slate arena, ice-blue friendlies, ember enemies. Kept in one
@@ -57,6 +58,12 @@ export interface RenderState {
   commander: CommanderView | null; // set by main.ts each frame
   showCommander: boolean;
   muted: boolean;
+  /** What the player's side has seen — drives fog of war on the minimap. */
+  knowledge: SquadKnowledge | null;
+  showMinimap: boolean;
+  /** Static map layer, redrawn only when the seed changes. */
+  minimapCache: HTMLCanvasElement | null;
+  minimapSeed: number;
 }
 
 /** What the HUD knows about the AI commander. Purely presentational. */
@@ -83,6 +90,10 @@ export function createRenderState(): RenderState {
     commander: null,
     showCommander: true,
     muted: false,
+    knowledge: null,
+    showMinimap: true,
+    minimapCache: null,
+    minimapSeed: -1,
   };
 }
 
@@ -393,6 +404,7 @@ function drawHud(
   ctx.fillText(`FRIENDLY ${friendlies}`, W - 90, 22);
   ctx.fillStyle = C.enemy;
   ctx.fillText(`HOSTILE ${hostiles}`, W - 14, 22);
+  drawMinimap(ctx, w, rs, followId);
   drawCommanderPanel(ctx, rs, W);
   const baseY = H - 26;
   ctx.textAlign = 'left';
@@ -517,4 +529,145 @@ function drawCommanderPanel(ctx: CanvasRenderingContext2D, rs: RenderState, W: n
     ctx.fillText(`"${o.reason}"`.slice(0, 42), x + 8, y + 10);
     y += 23;
   }
+}
+
+// --- minimap ---------------------------------------------------------------
+
+const MINIMAP_W = 176; // CSS pixels
+const MINIMAP_PAD = 6;
+
+/**
+ * The static layer is expensive relative to its size — 3000+ tiles — and never
+ * changes within a match, so it is rendered once to an offscreen canvas and
+ * blitted thereafter. Cached at 2x so it stays crisp on high-DPI screens.
+ */
+function buildMinimapCache(w: World): HTMLCanvasElement {
+  const scale = (MINIMAP_W * 2) / w.map.w;
+  const cv = document.createElement('canvas');
+  cv.width = Math.ceil(w.map.w * scale);
+  cv.height = Math.ceil(w.map.h * scale);
+  const c = cv.getContext('2d')!;
+
+  c.fillStyle = '#0f141b';
+  c.fillRect(0, 0, cv.width, cv.height);
+
+  for (let ty = 0; ty < w.map.h; ty++) {
+    for (let tx = 0; tx < w.map.w; tx++) {
+      const t = tileAt(w.map, tx, ty);
+      if (t === T_GROUND) continue;
+      c.fillStyle =
+        t === T_ROAD
+          ? '#1b222b'
+          : t === T_INTERIOR || t === T_DOOR
+            ? '#222b36'
+            : t === T_COVER
+              ? '#3a3126'
+              : '#3d4855'; // wall
+      c.fillRect(tx * scale, ty * scale, Math.ceil(scale), Math.ceil(scale));
+    }
+  }
+
+  // Building footprints, so compounds read as structures at a glance.
+  c.strokeStyle = 'rgba(120,140,165,0.35)';
+  c.lineWidth = 1;
+  for (const b of w.map.buildings) {
+    c.strokeRect(b.x * scale, b.y * scale, b.w * scale, b.h * scale);
+  }
+  return cv;
+}
+
+function drawMinimap(
+  ctx: CanvasRenderingContext2D,
+  w: World,
+  rs: RenderState,
+  followId: number,
+): void {
+  if (!rs.showMinimap) return;
+
+  if (!rs.minimapCache || rs.minimapSeed !== w.seed) {
+    rs.minimapCache = buildMinimapCache(w);
+    rs.minimapSeed = w.seed;
+  }
+
+  const mw = MINIMAP_W;
+  const mh = (MINIMAP_W * w.map.h) / w.map.w;
+  const ox = 14;
+  const oy = 32;
+  const s = mw / (w.map.w * TILE); // world px -> minimap px
+
+  ctx.save();
+  ctx.fillStyle = 'rgba(8,12,17,0.72)';
+  ctx.fillRect(ox - MINIMAP_PAD, oy - MINIMAP_PAD, mw + MINIMAP_PAD * 2, mh + MINIMAP_PAD * 2);
+  ctx.strokeStyle = 'rgba(120,140,165,0.25)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(
+    ox - MINIMAP_PAD + 0.5,
+    oy - MINIMAP_PAD + 0.5,
+    mw + MINIMAP_PAD * 2 - 1,
+    mh + MINIMAP_PAD * 2 - 1,
+  );
+
+  ctx.drawImage(rs.minimapCache, ox, oy, mw, mh);
+
+  // viewport rectangle — what is currently on screen
+  const vwWorld = ctx.canvas.width / rs.zoom;
+  const vhWorld = VIEW_H;
+  ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+  ctx.strokeRect(
+    ox + rs.camera.x * s,
+    oy + rs.camera.y * s,
+    Math.min(mw, vwWorld * s),
+    Math.min(mh, vhWorld * s),
+  );
+
+  // Enemy contacts: only what the player's side has actually seen. Stale ones
+  // fade rather than vanish — a contact from ten seconds ago is still worth
+  // knowing about, as long as it is visibly uncertain.
+  if (rs.knowledge) {
+    for (const c of rs.knowledge.contacts.values()) {
+      const age = w.tick - c.lastSeenTick;
+      const fresh = Math.max(0.18, 1 - age / 720);
+      ctx.globalAlpha = fresh;
+      ctx.fillStyle = C.enemy;
+      const cx = ox + (c.tile.x + 0.5) * TILE * s;
+      const cy = oy + (c.tile.y + 0.5) * TILE * s;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+      if (age > 180) {
+        ctx.strokeStyle = C.enemy;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  for (const e of w.entities) {
+    if (!e.alive || e.team === 'enemy') continue;
+    const px = ox + e.pos.x * s;
+    const py = oy + e.pos.y * s;
+    if (e.id === followId) {
+      ctx.fillStyle = C.player;
+      ctx.beginPath();
+      ctx.arc(px, py, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      // facing wedge
+      ctx.strokeStyle = C.player;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + Math.cos(e.aim) * 8, py + Math.sin(e.aim) * 8);
+      ctx.stroke();
+    } else {
+      ctx.fillStyle = C.ally;
+      ctx.beginPath();
+      ctx.arc(px, py, 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  ctx.restore();
 }

@@ -1,7 +1,7 @@
 import { TILE, buildingAt, type GameMap } from '../../core/map';
-import { sideOf, type Team } from '../../core/entity';
-import { isHostile, type World } from '../../core/world';
-import { canSee } from '../vision';
+import { dist, sideOf, type Team } from '../../core/entity';
+import { isHostile, type World, type GameEvent } from '../../core/world';
+import { canSee, SIGHT_RANGE } from '../vision';
 
 /**
  * What one side currently knows about the other. The commander is NOT
@@ -55,13 +55,21 @@ export function describe(map: GameMap, p: { x: number; y: number }): string {
   return `open ground ${tiles} tiles ${compass || 'from'} of ${best.name}`;
 }
 
-/** Refresh what `side` can currently see. Call once per commander tick. */
-export function updateKnowledge(w: World, k: SquadKnowledge): void {
+/**
+ * Refresh what `side` can currently see.
+ *
+ * `range` defaults to the bots' own sight range, which is what the commander
+ * uses — deliberately tight, so the model never reasons about something its
+ * units could not have observed. The player's minimap passes a larger value
+ * matched to the visible screen, since the renderer draws every entity in
+ * view: a contact you can plainly see should not be missing from your map.
+ */
+export function updateKnowledge(w: World, k: SquadKnowledge, range = SIGHT_RANGE): void {
   const observers = w.entities.filter((e) => e.alive && sideOf(e.team) === k.side);
 
   for (const target of w.entities) {
     if (!target.alive || sideOf(target.team) === k.side) continue;
-    const seen = observers.some((o) => canSee(w.map, o.pos, target.pos));
+    const seen = observers.some((o) => canSee(w.map, o.pos, target.pos, range));
     if (!seen) continue;
     k.contacts.set(target.id, {
       id: target.id,
@@ -76,6 +84,38 @@ export function updateKnowledge(w: World, k: SquadKnowledge): void {
     const ent = w.entities.find((e) => e.id === id);
     if (!ent || !ent.alive) k.contacts.delete(id);
     else if (w.tick - c.lastSeenTick > CONTACT_TTL) k.contacts.delete(id);
+  }
+}
+
+/**
+ * Gunfire gives away position. Anything that fires within earshot of the squad
+ * is marked, whether or not anyone has line of sight to it — which is what
+ * makes the minimap useful for the two-thirds of the map that is off-screen,
+ * and ties it to the audio: if you can hear it, you can see it on the map.
+ */
+export function markHeard(
+  w: World,
+  k: SquadKnowledge,
+  events: GameEvent[],
+  range: number,
+): void {
+  for (const ev of events) {
+    if (ev.type !== 'fire') continue;
+    const shooter = w.entities.find((e) => e.id === ev.shooterId);
+    if (!shooter || !shooter.alive || sideOf(shooter.team) === k.side) continue;
+
+    const heard = w.entities.some(
+      (o) => o.alive && sideOf(o.team) === k.side && dist(o.pos, shooter.pos) <= range,
+    );
+    if (!heard) continue;
+
+    k.contacts.set(shooter.id, {
+      id: shooter.id,
+      tile: toTile(shooter.pos),
+      where: describe(w.map, shooter.pos),
+      hp: shooter.hp,
+      lastSeenTick: w.tick,
+    });
   }
 }
 
