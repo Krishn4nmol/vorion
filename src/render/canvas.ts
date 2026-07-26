@@ -61,6 +61,8 @@ export interface RenderState {
   /** What the player's side has seen — drives fog of war on the minimap. */
   knowledge: SquadKnowledge | null;
   showMinimap: boolean;
+  /** True while the title screen is up — suppresses player-specific HUD. */
+  attract: boolean;
   /** Static map layer, redrawn only when the seed changes. */
   minimapCache: HTMLCanvasElement | null;
   minimapSeed: number;
@@ -92,6 +94,7 @@ export function createRenderState(): RenderState {
     muted: false,
     knowledge: null,
     showMinimap: true,
+    attract: false,
     minimapCache: null,
     minimapSeed: -1,
   };
@@ -404,6 +407,11 @@ function drawHud(
   ctx.fillText(`FRIENDLY ${friendlies}`, W - 90, 22);
   ctx.fillStyle = C.enemy;
   ctx.fillText(`HOSTILE ${hostiles}`, W - 14, 22);
+  if (rs.attract) {
+    // Behind the title screen: no health, ammo or outcome text.
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return;
+  }
   drawMinimap(ctx, w, rs, followId);
   drawCommanderPanel(ctx, rs, W);
   const baseY = H - 26;

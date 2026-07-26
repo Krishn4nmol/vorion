@@ -7,6 +7,7 @@ import { createBrowserAsk } from './ai/commander/browserAsk';
 import './style.css';
 import { AudioEngine } from './render/audio';
 import { createKnowledge, updateKnowledge, markHeard } from './ai/commander/snapshot';
+import { setupMenu } from './menu';
 
 const TICK_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
@@ -70,7 +71,11 @@ let commanderEnabled = true;
 
 const ask = createBrowserAsk(MODEL);
 
-function newMatch(seed = Math.floor(Math.random() * 1e9)): void {
+/**
+ * `attract` puts a bot in the player's slot, so a match plays out behind the
+ * title screen instead of a frozen frame.
+ */
+function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void {
   world = createWorld(seed);
   rs.anims.clear();
   const bot = makeBotController();
@@ -78,12 +83,15 @@ function newMatch(seed = Math.floor(Math.random() * 1e9)): void {
   controllers = new Map();
   playerId = world.entities.find((e) => e.team === 'player')!.id;
   for (const e of world.entities) {
-    controllers.set(e.id, e.id === playerId ? player : bot);
+    controllers.set(e.id, e.id === playerId && !attract ? player : bot);
   }
+  rs.attract = attract;
 
   // Side 1 is the hostile squad. The player's allies stay autonomous, so the
   // comparison the player experiences is coordinated vs uncoordinated.
-  commander = commanderEnabled
+  // No commander in attract mode: nobody is watching closely enough to justify
+  // spending API quota while the title screen sits open.
+  commander = commanderEnabled && !attract
     ? new Commander(createKnowledge(1), ask, {
         intervalTicks: COMMAND_INTERVAL_TICKS,
         mode: 'async',
@@ -119,8 +127,13 @@ function syncCommanderView(): void {
   };
 }
 
+const menu = setupMenu(() => {
+  audio.unlock(); // the PLAY click is the gesture browsers require
+  newMatch();
+});
+
 resize();
-newMatch();
+newMatch(undefined, true); // attract-mode match behind the title screen
 
 let last = performance.now();
 let acc = 0;
@@ -129,14 +142,20 @@ function frame(now: number): void {
   acc += now - last;
   last = now;
 
-  if (input.consumePress('r')) {
+  // Escape returns to the title screen, resuming attract mode.
+  if (input.consumePress('escape') && !menu.isOpen()) {
+    menu.open();
+    newMatch(undefined, true);
+  }
+
+  if (!menu.isOpen() && input.consumePress('r')) {
     const me = world.entities.find((e) => e.id === playerId);
     if (world.over || !me || !me.alive) newMatch();
     else wantReload = true;
   }
 
   // C toggles the commander between matches; O hides the overlay.
-  if (input.consumePress('c')) {
+  if (!menu.isOpen() && input.consumePress('c')) {
     commanderEnabled = !commanderEnabled;
     newMatch();
   }
@@ -146,6 +165,8 @@ function frame(now: number): void {
 
   if (input.consumePress('n')) rs.showMinimap = !rs.showMinimap;
 
+  // Attract-mode matches loop so the title screen never sits on a dead frame.
+  if (rs.attract && world.over) newMatch(undefined, true);
   let steps = 0;
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
     acc -= TICK_MS;

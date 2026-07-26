@@ -3,10 +3,36 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>VØRION</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>VØRIØN</title>
   </head>
   <body>
     <canvas id="game"></canvas>
+
+    <div id="menu">
+      <div class="panel">
+        <h1>V<span class="o">Ø</span>RI<span class="o">Ø</span>N</h1>
+        <p class="tag">
+          Tactical top-down squad shooter.<br />
+          Lead your fireteam. Clear the compound.
+        </p>
+
+        <button id="start">PLAY</button>
+
+        <div class="controls">
+          <div><b>WASD</b> move</div>
+          <div><b>MOUSE</b> aim</div>
+          <div><b>HOLD LMB</b> fire</div>
+          <div><b>R</b> reload / restart</div>
+          <div><b>C</b> toggle commander</div>
+          <div><b>O</b> order overlay</div>
+          <div><b>N</b> minimap</div>
+          <div><b>M</b> mute</div>
+          <div><b>ESC</b> menu</div>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

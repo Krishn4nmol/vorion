@@ -4,6 +4,7 @@ html, body {
   height: 100%;
   background: #0d1117;
   overflow: hidden;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 
 #game {
@@ -12,3 +13,69 @@ html, body {
   height: 100vh;
   cursor: crosshair;
 }
+
+#menu {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(9, 13, 18, 0.82);
+  backdrop-filter: blur(3px);
+  transition: opacity 0.18s ease;
+}
+
+#menu.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.panel {
+  width: min(460px, 90vw);
+  padding: 34px 36px 28px;
+  border: 1px solid rgba(121, 207, 230, 0.22);
+  background: rgba(13, 17, 23, 0.94);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.panel h1 {
+  font-size: 38px;
+  letter-spacing: 0.16em;
+  font-weight: 600;
+  color: #eef6fa;
+}
+
+.panel h1 .o { color: #79cfe6; }
+
+.tag {
+  margin: 16px 0 30px;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #7d8b9c;
+  letter-spacing: 0.04em;
+}
+
+#start {
+  width: 100%;
+  padding: 14px;
+  font: inherit;
+  font-size: 15px;
+  letter-spacing: 0.3em;
+  color: #0d1117;
+  background: #79cfe6;
+  border: none;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+#start:hover { background: #9adcef; }
+
+.controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 18px;
+  margin-top: 24px;
+  font-size: 10px;
+  color: #5d6b7d;
+}
+
+.controls b { color: #97a6b8; font-weight: 600; }
