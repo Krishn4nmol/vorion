@@ -3,11 +3,12 @@ import { makeBotController } from './ai/behaviour';
 import { createRenderState, render, ingestEvents, screenToWorld, VIEW_H } from './render/canvas';
 import { attachInput, moveAxis, type InputState } from './input';
 import { Commander } from './ai/commander/runtime';
-import { createBrowserAsk } from './ai/commander/browserAsk';
 import './style.css';
 import { AudioEngine } from './render/audio';
 import { createKnowledge, updateKnowledge, markHeard } from './ai/commander/snapshot';
 import { setupMenu } from './menu';
+import { createBrowserAsk, QuotaError } from './ai/commander/browserAsk';
+import { ScriptedCommander } from './ai/commander/scripted';
 
 const TICK_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
@@ -67,9 +68,19 @@ let world: World;
 let controllers: Map<number, Controller>;
 let playerId: number;
 let commander: Commander | null = null;
+let scripted: ScriptedCommander | null = null;
 let commanderEnabled = true;
+/** Set once the endpoint reports quota exhaustion; survives across matches. */
+let quotaExhausted = false;
 
-const ask = createBrowserAsk(MODEL);
+const ask = ((base) => async (system: string, user: string) => {
+  try {
+    return await base(system, user);
+  } catch (e) {
+    if (e instanceof QuotaError) quotaExhausted = true;
+    throw e;
+  }
+})(createBrowserAsk(MODEL));
 
 /**
  * `attract` puts a bot in the player's slot, so a match plays out behind the
@@ -91,14 +102,22 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
   // comparison the player experiences is coordinated vs uncoordinated.
   // No commander in attract mode: nobody is watching closely enough to justify
   // spending API quota while the title screen sits open.
-  commander = commanderEnabled && !attract
-    ? new Commander(createKnowledge(1), ask, {
+  // Once the shared budget is gone, the hostile squad keeps coordinating via
+  // the scripted commander rather than reverting to fighting individually.
+  commander = null;
+  scripted = null;
+  if (commanderEnabled && !attract) {
+    if (quotaExhausted) {
+      scripted = new ScriptedCommander(createKnowledge(1), COMMAND_INTERVAL_TICKS);
+    } else {
+      commander = new Commander(createKnowledge(1), ask, {
         intervalTicks: COMMAND_INTERVAL_TICKS,
         mode: 'async',
         maxCalls: 60,
         timeoutMs: 6000,
-      })
-    : null;
+      });
+    }
+  }
 
   // The player's side tracks contacts too — not to command with, but so the
   // minimap can respect fog of war instead of revealing the whole map.
@@ -108,6 +127,19 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
 }
 
 function syncCommanderView(): void {
+  if (scripted) {
+    rs.commander = {
+      enabled: true,
+      thinking: false,
+      calls: 0,
+      model: 'scripted fallback — LLM budget spent',
+      lastTick: world.tick,
+      currentTick: world.tick,
+      orders: scripted.lastOrders,
+      error: null,
+    };
+    return;
+  }
   if (!commander) {
     rs.commander = commanderEnabled
       ? null
@@ -167,6 +199,12 @@ function frame(now: number): void {
 
   // Attract-mode matches loop so the title screen never sits on a dead frame.
   if (rs.attract && world.over) newMatch(undefined, true);
+  // Quota can run out mid-match. Swap in the scripted commander straight away
+  // rather than leaving the squad uncoordinated until the next restart.
+  if (quotaExhausted && commander && !scripted && !rs.attract) {
+    scripted = new ScriptedCommander(commander.knowledge, COMMAND_INTERVAL_TICKS);
+    commander = null;
+  }
   let steps = 0;
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
     acc -= TICK_MS;
@@ -190,6 +228,7 @@ function frame(now: number): void {
         }
       }
       commander?.update(world);
+      scripted?.update(world);
     }
   }
   if (acc > TICK_MS * 10) acc = 0;
