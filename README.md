@@ -1,4 +1,4 @@
-# VØRION
+# VØRIØN
 
 A top-down tactical shooter where enemy squads are commanded by an LLM — and a
 measurement of whether that actually helps.
@@ -139,6 +139,27 @@ invisible on screen:
 
 ---
 
+## The game
+
+Nothing is loaded from disk — every sprite, sound and map is generated at
+runtime. No engine, no assets, no licences.
+
+- **Procedural soldiers.** Legs track direction of travel, torso tracks aim, so
+  a strafing unit reads as a person rather than a rotating blob.
+- **Procedural audio.** Gunshots, impacts, deaths and reloads are synthesised
+  from filtered noise and oscillators. Distance attenuates volume *and* closes
+  a lowpass, so far-off fire sounds duller — a range cue with no UI. Sounds
+  concerning the player bypass the voice limiter, so your own reload is never
+  starved by ambient gunfire.
+- **Minimap with fog of war.** Runs on the same knowledge model the commander
+  is constrained by. Contacts fade with age and ring once stale; gunfire
+  reveals position at hearing range, which is wider than sight range.
+- **Fixed viewport.** The camera scales to show 880 world units vertically on
+  any monitor, so sight ranges are a game rule rather than a property of your
+  hardware. Threats with a clear shot from off-screen get edge markers.
+
+---
+
 ## Running it
 
 ```bash
@@ -154,8 +175,8 @@ GEMINI_API_KEY=...
 GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
-Controls: `WASD` move · mouse aim · hold click to fire · `R` reload ·
-`C` toggle commander · `O` toggle overlay
+Controls: `WASD` move · mouse aim · hold click to fire · `R` reload / restart ·
+`C` toggle commander · `O` order overlay · `N` minimap · `M` mute · `ESC` menu
 
 ### Reproducing the evaluation
 
