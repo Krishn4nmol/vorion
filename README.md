@@ -7,10 +7,6 @@ measurement of whether that actually helps.
 Gemini-driven commander across 160 paired matches. The interesting part is why,
 and the evidence is in this repo.
 
-**Short answer: it doesn't.** A 60-line scripted heuristic outperformed a
-Gemini-driven commander across 160 paired matches. The interesting part is why,
-and the evidence is in this repo.
-
 Built from scratch: deterministic simulation core, A* pathfinding and
 behaviour-tree bots, procedural compound maps, a validated LLM action schema,
 and a paired evaluation harness.
