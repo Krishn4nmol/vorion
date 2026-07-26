@@ -6,6 +6,7 @@ import { Commander } from './ai/commander/runtime';
 import { createKnowledge } from './ai/commander/snapshot';
 import { createBrowserAsk } from './ai/commander/browserAsk';
 import './style.css';
+import { AudioEngine } from './render/audio';
 
 const TICK_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
@@ -22,6 +23,13 @@ const canvas = document.getElementById('game') as HTMLCanvasElement;
 const ctx = canvas.getContext('2d')!;
 const input = attachInput(canvas);
 const rs = createRenderState();
+const audio = new AudioEngine();
+
+// Browsers block audio until the user interacts, so the context is created on
+// the first gesture rather than at load.
+for (const ev of ['pointerdown', 'keydown'] as const) {
+  window.addEventListener(ev, () => audio.unlock(), { once: false });
+}
 
 function resize(): void {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -129,6 +137,8 @@ function frame(now: number): void {
   }
   if (input.consumePress('o')) rs.showCommander = !rs.showCommander;
 
+  if (input.consumePress('m')) rs.muted = audio.toggleMute();
+
   let steps = 0;
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
     acc -= TICK_MS;
@@ -137,6 +147,7 @@ function frame(now: number): void {
       step(world, controllers);
       ingestEvents(rs, world, world.events);
       // Fire-and-forget: async mode never blocks the render loop.
+      audio.ingest(world, rs, world.events, playerId, canvas.width / rs.zoom);
       commander?.update(world);
     }
   }

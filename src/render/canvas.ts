@@ -56,6 +56,7 @@ export interface RenderState {
   anims: Map<number, AnimState>; // per-entity walk cycles; render-side only
   commander: CommanderView | null; // set by main.ts each frame
   showCommander: boolean;
+  muted: boolean;
 }
 
 /** What the HUD knows about the AI commander. Purely presentational. */
@@ -81,6 +82,7 @@ export function createRenderState(): RenderState {
     anims: new Map(),
     commander: null,
     showCommander: true,
+    muted: false,
   };
 }
 
@@ -384,7 +386,7 @@ function drawHud(
   ctx.font = '11px ui-monospace, "Cascadia Mono", Consolas, monospace';
   ctx.textAlign = 'left';
   ctx.fillStyle = C.hudDim;
-  ctx.fillText(`SEED ${w.seed}   TICK ${w.tick}`, 14, 22);
+  ctx.fillText(`SEED ${w.seed}   TICK ${w.tick}${rs.muted ? '   MUTED' : ''}`, 14, 22);
 
   ctx.textAlign = 'right';
   ctx.fillStyle = C.ally;
