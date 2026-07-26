@@ -105,8 +105,14 @@ export class AudioEngine {
     };
   }
 
-  private voice(): boolean {
-    if (!this.ctx || this.muted || this.voices >= MAX_VOICES) return false;
+  /**
+   * Reserves a voice. Sounds concerning the player bypass the cap: your own
+   * reload is feedback you act on, and having it starved by ambient gunfire is
+   * exactly the wrong failure.
+   */
+  private voice(priority = false): boolean {
+    if (!this.ctx || this.muted) return false;
+    if (!priority && this.voices >= MAX_VOICES) return false;
     this.voices++;
     return true;
   }
@@ -212,34 +218,61 @@ export class AudioEngine {
     this.release(osc);
   }
 
-  /** Reload: two mechanical clicks, mag out then mag in. */
-  private reload(gain: number, pan: number): void {
+  /**
+   * Reload: mag release, mag seat, bolt. Three mechanical events rather than
+   * two — the extra one is what makes it read as a rifle rather than a click.
+   *
+   * The player's own reload is the loudest thing in the mix and centred, since
+   * it is feedback rather than ambience: you need to know you cannot shoot.
+   */
+  private reload(gain: number, pan: number, onPlayer: boolean): void {
     const ctx = this.ctx!;
     const t = ctx.currentTime;
+    const level = onPlayer ? 0.75 : gain * 0.5;
+    const p = onPlayer ? 0 : pan;
 
-    for (const [delay, freq] of [
-      [0, 2600],
-      [0.13, 1900],
-    ] as const) {
+    // delay, centre frequency, filter width, duration, pitch
+    const parts: [number, number, number, number, number][] = [
+      [0, 1500, 1.4, 0.05, 2.4], // magazine release
+      [0.28, 900, 1.1, 0.07, 1.8], // magazine seated — heavier
+      [0.52, 2200, 2.0, 0.04, 2.8], // bolt forward
+    ];
+
+    for (const [delay, freq, q, dur, rate] of parts) {
       const src = ctx.createBufferSource();
       src.buffer = this.noise!;
-      src.playbackRate.value = 2.2;
+      src.playbackRate.value = rate;
 
       const bp = ctx.createBiquadFilter();
       bp.type = 'bandpass';
       bp.frequency.value = freq;
-      bp.Q.value = 5;
+      bp.Q.value = q; // wider than before: Q=5 was almost inaudible
 
       const env = ctx.createGain();
-      env.gain.setValueAtTime(gain * 0.3, t + delay);
-      env.gain.exponentialRampToValueAtTime(0.0001, t + delay + 0.05);
+      env.gain.setValueAtTime(0, t + delay);
+      env.gain.linearRampToValueAtTime(level, t + delay + 0.002);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + delay + dur);
 
       const panner = ctx.createStereoPanner();
-      panner.pan.value = pan;
+      panner.pan.value = p;
 
       src.connect(bp).connect(env).connect(panner).connect(this.master!);
-      src.start(t + delay, Math.random() * 0.5, 0.06);
+      src.start(t + delay, Math.random() * 0.5, dur + 0.02);
       this.release(src);
+
+      // A low thud under the magazine seating gives it physical weight.
+      if (delay === 0.28) {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(190, t + delay);
+        osc.frequency.exponentialRampToValueAtTime(70, t + delay + 0.06);
+        const oenv = ctx.createGain();
+        oenv.gain.setValueAtTime(level * 0.6, t + delay);
+        oenv.gain.exponentialRampToValueAtTime(0.0001, t + delay + 0.07);
+        osc.connect(oenv).connect(panner);
+        osc.start(t + delay);
+        osc.stop(t + delay + 0.08);
+      }
     }
   }
 
@@ -271,16 +304,17 @@ export class AudioEngine {
         if (!e) continue;
         x = e.pos.x;
         y = e.pos.y;
+        onPlayer = e.id === playerId;
       }
 
       const p = this.place(rs, x, y, viewW);
       if (!p) continue;
-      if (!this.voice()) continue;
+      if (!this.voice(onPlayer)) continue;
 
       if (ev.type === 'fire') this.shot(p.gain, p.pan, p.near);
       else if (ev.type === 'damage') this.impact(p.gain, p.pan, onPlayer);
       else if (ev.type === 'death') this.death(p.gain, p.pan);
-      else this.reload(p.gain, p.pan);
+      else this.reload(p.gain, p.pan, onPlayer);
     }
   }
 }
