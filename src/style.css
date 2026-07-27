@@ -79,3 +79,68 @@ html, body {
 }
 
 .controls b { color: #97a6b8; font-weight: 600; }
+
+.paused-label {
+  margin-top: 10px;
+  font-size: 12px;
+  letter-spacing: 0.28em;
+  color: #e0714a;
+}
+
+.field input[type="range"] {
+  width: 150px;
+  accent-color: #79cfe6;
+  cursor: pointer;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 0;
+  border-top: 1px solid rgba(121, 207, 230, 0.1);
+}
+
+.field label {
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: #97a6b8;
+}
+
+.field select {
+  width: 210px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: #eef6fa;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(121, 207, 230, 0.2);
+  outline: none;
+  cursor: pointer;
+}
+
+.field select:focus { border-color: #79cfe6; }
+
+.field select option {
+  background: #12171f;
+  color: #eef6fa;
+}
+
+#restart {
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: #97a6b8;
+  background: transparent;
+  border: 1px solid rgba(121, 207, 230, 0.25);
+  cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease;
+}
+
+#restart:hover {
+  border-color: #79cfe6;
+  color: #eef6fa;
+}

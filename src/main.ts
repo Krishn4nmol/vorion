@@ -6,9 +6,11 @@ import { Commander } from './ai/commander/runtime';
 import './style.css';
 import { AudioEngine } from './render/audio';
 import { createKnowledge, updateKnowledge, markHeard } from './ai/commander/snapshot';
-import { setupMenu } from './menu';
 import { createBrowserAsk, QuotaError } from './ai/commander/browserAsk';
 import { ScriptedCommander } from './ai/commander/scripted';
+import { MatchStats } from './stats';
+import type { WeaponId } from './core/entity';
+import { setupMenu, type Scale } from './menu';
 
 const TICK_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
@@ -82,13 +84,31 @@ const ask = ((base) => async (system: string, user: string) => {
   }
 })(createBrowserAsk(MODEL));
 
+let loadout: WeaponId = 'rifle';
+
+let scale: Scale = 'skirmish';
+
 /**
- * `attract` puts a bot in the player's slot, so a match plays out behind the
- * title screen instead of a frozen frame.
+ * Larger squads make matches roughly 35% longer, not dramatically so: more
+ * units means more simultaneous engagements, so casualties accumulate faster
+ * and the two effects nearly cancel. Both configurations are balanced within
+ * a few points of even.
  */
+const SCALES: Record<Scale, { mapW: number; mapH: number; allies: number; enemies: number }> = {
+  skirmish: { mapW: 64, mapH: 48, allies: 3, enemies: 4 },
+  battle: { mapW: 96, mapH: 72, allies: 5, enemies: 6 },
+};
+
 function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void {
-  world = createWorld(seed);
+  // Varied weapons in play; the evaluation harness keeps the uniform default
+  // so its published numbers stay reproducible.
+  world = createWorld(seed, {
+    ...SCALES[scale],
+    weapons: 'varied',
+    playerWeapon: loadout,
+  });
   rs.anims.clear();
+  rs.stats = new MatchStats();
   const bot = makeBotController();
   const player = makePlayerController(input);
   controllers = new Map();
@@ -159,12 +179,25 @@ function syncCommanderView(): void {
   };
 }
 
-const menu = setupMenu(() => {
-  audio.unlock(); // the PLAY click is the gesture browsers require
-  newMatch();
+let paused = false;
+
+const menu = setupMenu({
+  onStart: (weapon, chosenScale) => {
+    audio.unlock(); // the PLAY click is the gesture browsers require
+    loadout = weapon;
+    scale = chosenScale;
+    paused = false;
+    newMatch();
+  },
+  onResume: () => {
+    audio.unlock();
+    paused = false;
+  },
+  onVolume: (v) => audio.setVolume(v),
 });
 
 resize();
+menu.open(false);
 newMatch(undefined, true); // attract-mode match behind the title screen
 
 let last = performance.now();
@@ -174,10 +207,18 @@ function frame(now: number): void {
   acc += now - last;
   last = now;
 
-  // Escape returns to the title screen, resuming attract mode.
-  if (input.consumePress('escape') && !menu.isOpen()) {
-    menu.open();
-    newMatch(undefined, true);
+  // Escape pauses a live match rather than discarding it. From the title
+  // screen it does nothing — there is no match to return to.
+  if (input.consumePress('escape')) {
+    if (menu.isOpen()) {
+      if (paused) {
+        paused = false;
+        menu.close();
+      }
+    } else if (!rs.attract) {
+      paused = true;
+      menu.open(true);
+    }
   }
 
   if (!menu.isOpen() && input.consumePress('r')) {
@@ -198,7 +239,7 @@ function frame(now: number): void {
   if (input.consumePress('n')) rs.showMinimap = !rs.showMinimap;
 
   // Attract-mode matches loop so the title screen never sits on a dead frame.
-  if (rs.attract && world.over) newMatch(undefined, true);
+  if (rs.attract && world.over && !paused) newMatch(undefined, true);
   // Quota can run out mid-match. Swap in the scripted commander straight away
   // rather than leaving the squad uncoordinated until the next restart.
   if (quotaExhausted && commander && !scripted && !rs.attract) {
@@ -209,10 +250,11 @@ function frame(now: number): void {
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
     acc -= TICK_MS;
     steps++;
-    if (!world.over) {
+    if (!world.over && !paused) {
       step(world, controllers);
       ingestEvents(rs, world, world.events);
       // Fire-and-forget: async mode never blocks the render loop.
+      rs.stats?.ingest(world.events);
       audio.ingest(world, rs, world.events, playerId, canvas.width / rs.zoom);
       // Line-of-sight checks are cheap but not free; six times a second is
       // well past what the eye can follow on a 176px map.

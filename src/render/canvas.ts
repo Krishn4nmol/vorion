@@ -13,6 +13,7 @@ import { dist, type Entity } from '../core/entity';
 import { isHostile, type World, type GameEvent } from '../core/world';
 import { drawSoldier, drawCorpse, stepAnim, type AnimState } from './soldier';
 import type { SquadKnowledge } from '../ai/commander/snapshot';
+import type { MatchStats } from '../stats';
 
 /**
  * Palette. Cold slate arena, ice-blue friendlies, ember enemies. Kept in one
@@ -66,6 +67,8 @@ export interface RenderState {
   /** Static map layer, redrawn only when the seed changes. */
   minimapCache: HTMLCanvasElement | null;
   minimapSeed: number;
+  /** Per-match tallies for the end-of-match screen. */
+  stats: MatchStats | null;
 }
 
 /** What the HUD knows about the AI commander. Purely presentational. */
@@ -97,6 +100,7 @@ export function createRenderState(): RenderState {
     attract: false,
     minimapCache: null,
     minimapSeed: -1,
+    stats: null,
   };
 }
 
@@ -420,19 +424,7 @@ function drawHud(
   // Match outcome is a property of the world, not of the player being alive:
   // your squad can win the match after you're dead.
   if (w.over) {
-    const won = w.entities.some((e) => e.alive && e.team !== 'enemy');
-    ctx.textAlign = 'center';
-    ctx.font = '20px ui-monospace, "Cascadia Mono", Consolas, monospace';
-    ctx.fillStyle = won ? C.accent : C.danger;
-    ctx.fillText(won ? 'SECTOR CLEARED' : 'SQUAD LOST', W / 2, H / 2 - 8);
-
-    ctx.font = '12px ui-monospace, "Cascadia Mono", Consolas, monospace';
-    ctx.fillStyle = C.hudDim;
-    const note =
-      won && me && !me.alive
-        ? 'YOUR SQUAD FINISHED IT   [R] NEW MATCH'
-        : '[R] NEW MATCH';
-    ctx.fillText(note, W / 2, H / 2 + 16);
+    drawScoreboard(ctx, w, rs, followId, W, H);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     return;
   }
@@ -473,9 +465,12 @@ function drawHud(
     ctx.fillStyle = C.hudDim;
     ctx.fillText('RELOADING', W - 14, baseY - 14);
   } else {
-    ctx.fillStyle = wp.ammo > 5 ? C.hudText : C.danger;
+    ctx.fillStyle = wp.ammo > wp.magSize * 0.2 ? C.hudText : C.danger;
     ctx.font = '15px ui-monospace, "Cascadia Mono", Consolas, monospace';
     ctx.fillText(`${wp.ammo} / ${wp.magSize}`, W - 14, baseY - 2);
+    ctx.font = '9px ui-monospace, "Cascadia Mono", Consolas, monospace';
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText(wp.name, W - 14, baseY - 20);
   }
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -678,4 +673,110 @@ function drawMinimap(
   }
 
   ctx.restore();
+}
+
+// --- end-of-match scoreboard ------------------------------------------------
+
+const MONO = 'ui-monospace, "Cascadia Mono", Consolas, monospace';
+
+/**
+ * Shown when the match ends. Every figure here comes from the same event bus
+ * the renderer and audio engine read, so nothing is tracked twice and the
+ * simulation stays unaware it is being scored.
+ */
+function drawScoreboard(
+  ctx: CanvasRenderingContext2D,
+  w: World,
+  rs: RenderState,
+  followId: number,
+  W: number,
+  H: number,
+): void {
+  const me = w.entities.find((e) => e.id === followId);
+  const won = w.entities.some((e) => e.alive && e.team !== 'enemy');
+  const stats = rs.stats;
+
+  const rows = w.entities
+    .filter((e) => e.team !== 'enemy')
+    .sort((a, b) => (a.id === followId ? -1 : b.id === followId ? 1 : a.id - b.id));
+
+  const panelW = 420;
+  const panelH = 132 + rows.length * 22;
+  const px = (W - panelW) / 2;
+  const py = (H - panelH) / 2;
+
+  ctx.fillStyle = 'rgba(8,12,17,0.88)';
+  ctx.fillRect(px, py, panelW, panelH);
+  ctx.strokeStyle = won ? 'rgba(121,207,230,0.35)' : 'rgba(224,113,74,0.35)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px + 0.5, py + 0.5, panelW - 1, panelH - 1);
+
+  ctx.textAlign = 'center';
+  ctx.font = '22px ' + MONO;
+  ctx.fillStyle = won ? C.accent : C.danger;
+  ctx.fillText(won ? 'SECTOR CLEARED' : 'SQUAD LOST', W / 2, py + 42);
+
+  ctx.font = '10px ' + MONO;
+  ctx.fillStyle = C.hudDim;
+  const secs = (w.tick / 60).toFixed(1);
+  ctx.fillText(
+    `SEED ${w.seed}   ${secs}s   ${won && me && !me.alive ? 'YOUR SQUAD FINISHED IT' : ''}`,
+    W / 2,
+    py + 60,
+  );
+
+  // column headers
+  const colId = px + 24;
+  const colKills = px + 210;
+  const colDmg = px + 280;
+  const colAcc = px + 370;
+  let y = py + 88;
+
+  ctx.font = '9px ' + MONO;
+  ctx.fillStyle = C.hudDim;
+  ctx.textAlign = 'left';
+  ctx.fillText('UNIT', colId, y);
+  ctx.textAlign = 'right';
+  ctx.fillText('KILLS', colKills, y);
+  ctx.fillText('DAMAGE', colDmg, y);
+  ctx.fillText('ACCURACY', colAcc, y);
+
+  ctx.strokeStyle = 'rgba(121,207,230,0.14)';
+  ctx.beginPath();
+  ctx.moveTo(px + 24, y + 6);
+  ctx.lineTo(px + panelW - 24, y + 6);
+  ctx.stroke();
+
+  y += 24;
+  ctx.font = '11px ' + MONO;
+
+  for (const e of rows) {
+    const s = stats?.get(e.id);
+    const isMe = e.id === followId;
+    ctx.fillStyle = isMe ? C.player : e.alive ? C.ally : 'rgba(121,207,230,0.4)';
+
+    ctx.textAlign = 'left';
+    ctx.fillText(isMe ? 'YOU' : `ALLY #${e.id}`, colId, y);
+
+    ctx.textAlign = 'right';
+    ctx.fillText(String(s?.kills ?? 0), colKills, y);
+    ctx.fillText(String(Math.round(s?.damageDealt ?? 0)), colDmg, y);
+    const acc = stats ? stats.accuracy(e.id) : 0;
+    ctx.fillText(s?.shotsFired ? `${(acc * 100).toFixed(0)}%` : '—', colAcc, y);
+
+    if (!e.alive) {
+      // Struck through rather than hidden: who died is part of the story.
+      ctx.strokeStyle = 'rgba(224,113,74,0.45)';
+      ctx.beginPath();
+      ctx.moveTo(colId, y - 4);
+      ctx.lineTo(colId + 56, y - 4);
+      ctx.stroke();
+    }
+    y += 22;
+  }
+
+  ctx.textAlign = 'center';
+  ctx.font = '11px ' + MONO;
+  ctx.fillStyle = C.hudDim;
+  ctx.fillText('[R] NEW MATCH      [ESC] MENU', W / 2, py + panelH - 18);
 }

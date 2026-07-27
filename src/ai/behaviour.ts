@@ -13,12 +13,23 @@ import { acquireTarget, findCover, aimWithLead, hasFiringLane } from './vision';
 
 const REPATH_INTERVAL = 30; // ticks
 const WAYPOINT_REACHED = 12; // px
-const PREFERRED_RANGE = 240; // px — bots try to fight from about here
 const RETREAT_HP = 30;
 const RETREAT_TICKS = 180;
 const STALEMATE_TICKS = 600; // no damage anywhere for this long -> everyone charges
 const ARRIVED = 40; // px, close enough to consider a move order complete
 const SUPPRESS_HOLD = 300; // px, how far a suppressing unit will push toward its mark
+
+/**
+ * Bots fight at a fraction of their weapon's effective range rather than a
+ * fixed distance. Shotgun carriers close to knife range, marksmen hang back —
+ * behaviour that falls out of the weapon table without any extra AI code.
+ */
+function preferredRange(e: Entity): number {
+  // 0.375 is exact for the rifle (640 * 0.375 = 240), which is the constant
+  // the published evaluation was run under. Changing it would silently
+  // invalidate those numbers.
+  return e.weapon.range * 0.375;
+}
 
 /** Walks the entity along entity.path, returns true while still travelling. */
 function followPath(e: Entity): boolean {
@@ -247,7 +258,7 @@ export function makeBotController(): Controller {
           // A flanking unit avoids picking long-range fights it was sent to
           // avoid, but always returns fire on anything close enough to hurt it.
           const engageRange =
-            order.kind === 'flank' ? PREFERRED_RANGE : e.weapon.range;
+            order.kind === 'flank' ? preferredRange(e) : e.weapon.range;
           if (canFire(w, e) && lane && dist(e.pos, target.pos) <= engageRange) {
             fire(w, e, e.aim);
           }
@@ -266,11 +277,12 @@ export function makeBotController(): Controller {
       const lane = hasFiringLane(w.map, e.pos, target.pos, e.radius);
 
       // Visible but no clean corridor, or stalemate broken open: close in.
-      if (!lane || aggressive || d > PREFERRED_RANGE * 1.3) {
+      const pref = preferredRange(e);
+      if (!lane || aggressive || d > pref * 1.3) {
         e.state = 'chase';
         setDestination(w, e, target.pos);
         followPath(e);
-      } else if (d < PREFERRED_RANGE * 0.6) {
+      } else if (d < pref * 0.6) {
         e.state = 'shoot';
         // Back off, keeping the target in view.
         moveToward(e, {

@@ -2,10 +2,13 @@ import { SeededRNG } from './rng';
 import {
   makeEntity,
   makeRifle,
+  makeWeapon,
   dist,
   sideOf,
+  WEAPON_IDS,
   type Entity,
   type Bullet,
+  type WeaponId,
 } from './entity';
 import {
   generateMap,
@@ -42,10 +45,18 @@ export interface WorldOptions {
   mapH?: number;
   allies?: number;
   enemies?: number;
+  /**
+   * 'uniform' gives everyone a rifle — the loadout the published evaluation
+   * was measured under, and therefore the default. The game passes 'varied'.
+   */
+  weapons?: 'uniform' | 'varied';
+  /** Overrides the player's weapon regardless of the mode above. */
+  playerWeapon?: WeaponId;
 }
 
 export function createWorld(seed: number, opts: WorldOptions = {}): World {
-  const { mapW = 64, mapH = 48, allies = 3, enemies = 4 } = opts;
+  const { mapW = 64, mapH = 48, allies = 3, enemies = 4, weapons = 'uniform',
+  playerWeapon,} = opts;
   const rng = new SeededRNG(seed);
   const map = generateMap(mapW, mapH, rng);
 
@@ -61,9 +72,16 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
     over: false,
   };
 
+  const pickWeapon = (team: Entity['team']): Entity['weapon'] => {
+    if (team === 'player' && playerWeapon) return makeWeapon(playerWeapon);
+    if (weapons === 'uniform') return makeRifle();
+    // Drawn from the world RNG, so a varied match is still reproducible.
+    return makeWeapon(rng.pick(WEAPON_IDS));
+  };
+
   const spawn = (team: Entity['team'], tx: number, ty: number): Entity => {
     const t = nearestFloor(map, tx, ty);
-    const e = makeEntity(world.nextId++, team, tileCenter(t.x, t.y), makeRifle());
+    const e = makeEntity(world.nextId++, team, tileCenter(t.x, t.y), pickWeapon(team));
     world.entities.push(e);
     return e;
   };
@@ -114,21 +132,24 @@ export function canFire(w: World, e: Entity): boolean {
 export function fire(w: World, e: Entity, angle: number): void {
   if (!canFire(w, e)) return;
   const wp = e.weapon;
-  const spread = w.rng.range(-wp.spread, wp.spread);
-  const a = angle + spread;
 
-  w.bullets.push({
-    id: w.nextId++,
-    ownerId: e.id,
-    team: e.team,
-    pos: {
-      x: e.pos.x + Math.cos(a) * (e.radius + 2),
-      y: e.pos.y + Math.sin(a) * (e.radius + 2),
-    },
-    vel: { x: Math.cos(a) * wp.bulletSpeed, y: Math.sin(a) * wp.bulletSpeed },
-    damage: wp.damage,
-    distanceLeft: wp.range,
-  });
+  // One trigger pull, `pellets` projectiles. Each gets its own spread roll, so
+  // a shotgun throws a genuine cone rather than a tight clump.
+  for (let i = 0; i < wp.pellets; i++) {
+    const a = angle + w.rng.range(-wp.spread, wp.spread);
+    w.bullets.push({
+      id: w.nextId++,
+      ownerId: e.id,
+      team: e.team,
+      pos: {
+        x: e.pos.x + Math.cos(a) * (e.radius + 2),
+        y: e.pos.y + Math.sin(a) * (e.radius + 2),
+      },
+      vel: { x: Math.cos(a) * wp.bulletSpeed, y: Math.sin(a) * wp.bulletSpeed },
+      damage: wp.damage,
+      distanceLeft: wp.range,
+    });
+  }
 
   wp.ammo--;
   wp.lastFiredTick = w.tick;

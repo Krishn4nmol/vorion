@@ -27,6 +27,7 @@ export class AudioEngine {
   private noise: AudioBuffer | null = null;
   private voices = 0;
   private muted = false;
+  private volume = 0.9;
 
   get isMuted(): boolean {
     return this.muted;
@@ -34,10 +35,19 @@ export class AudioEngine {
 
   toggleMute(): boolean {
     this.muted = !this.muted;
-    if (this.master) {
-      this.master.gain.setTargetAtTime(this.muted ? 0 : 0.9, this.now(), 0.02);
-    }
+    this.applyGain();
     return this.muted;
+  }
+
+  /** 0..1. Ramped rather than set, so adjusting mid-firefight doesn't click. */
+  setVolume(v: number): void {
+    this.volume = Math.max(0, Math.min(1, v));
+    this.applyGain();
+  }
+
+  private applyGain(): void {
+    if (!this.master) return;
+    this.master.gain.setTargetAtTime(this.muted ? 0 : this.volume, this.now(), 0.02);
   }
 
   /**
@@ -56,7 +66,7 @@ export class AudioEngine {
 
     this.ctx = new Ctor();
     this.master = this.ctx.createGain();
-    this.master.gain.value = this.muted ? 0 : 0.9;
+    this.master.gain.value = this.muted ? 0 : this.volume;
 
     // Gentle limiter. Without it, several shots landing on the same frame
     // clip audibly.
@@ -128,38 +138,49 @@ export class AudioEngine {
    * low sine for body. Distant shots get a lower cutoff — air absorbs high
    * frequencies first, and it doubles as a distance cue.
    */
-  private shot(gain: number, pan: number, near: number): void {
+  private shot(gain: number, pan: number, near: number, weapon = 'rifle'): void {
     const ctx = this.ctx!;
     const t = ctx.currentTime;
 
+    // Each weapon gets its own pitch, brightness and decay. A shotgun should
+    // sound like a heavier object than an SMG without needing a sample.
+    const voice =
+      weapon === 'shotgun'
+        ? { rate: 0.62, bright: 0.7, decay: 0.2, level: 0.85, body: 110 }
+        : weapon === 'marksman'
+          ? { rate: 1.05, bright: 1.35, decay: 0.17, level: 0.8, body: 130 }
+          : weapon === 'smg'
+            ? { rate: 1.25, bright: 1.1, decay: 0.07, level: 0.42, body: 200 }
+            : { rate: 1.0, bright: 1.0, decay: 0.11, level: 0.55, body: 160 };
+
     const src = ctx.createBufferSource();
     src.buffer = this.noise!;
-    src.playbackRate.value = 0.9 + Math.random() * 0.25;
+    src.playbackRate.value = voice.rate * (0.92 + Math.random() * 0.16);
 
     const lp = ctx.createBiquadFilter();
     lp.type = 'lowpass';
-    lp.frequency.setValueAtTime(1200 + 5200 * near, t);
-    lp.frequency.exponentialRampToValueAtTime(180 + 400 * near, t + 0.09);
+    lp.frequency.setValueAtTime((1200 + 5200 * near) * voice.bright, t);
+    lp.frequency.exponentialRampToValueAtTime((180 + 400 * near) * voice.bright, t + 0.09);
     lp.Q.value = 1.2;
 
     const env = ctx.createGain();
     env.gain.setValueAtTime(0, t);
-    env.gain.linearRampToValueAtTime(gain * 0.55, t + 0.003);
-    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
+    env.gain.linearRampToValueAtTime(gain * voice.level, t + 0.003);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + voice.decay);
 
     const panner = ctx.createStereoPanner();
     panner.pan.value = pan;
 
     src.connect(lp).connect(env).connect(panner).connect(this.master!);
-    src.start(t, Math.random() * 0.5, 0.14);
+    src.start(t, Math.random() * 0.5, voice.decay + 0.04);
 
     // low-frequency thump for weight
     const osc = ctx.createOscillator();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(160, t);
+    osc.frequency.setValueAtTime(voice.body, t);
     osc.frequency.exponentialRampToValueAtTime(50, t + 0.07);
     const oenv = ctx.createGain();
-    oenv.gain.setValueAtTime(gain * 0.35, t);
+    oenv.gain.setValueAtTime(gain * (weapon === 'shotgun' ? 0.6 : 0.35), t);
     oenv.gain.exponentialRampToValueAtTime(0.0001, t + 0.08);
     osc.connect(oenv).connect(panner);
     osc.start(t);
@@ -288,11 +309,13 @@ export class AudioEngine {
       let y = 0;
       let onPlayer = false;
 
+      let weapon = 'rifle';
       if (ev.type === 'fire') {
         const e = w.entities.find((n) => n.id === ev.shooterId);
         if (!e) continue;
         x = e.pos.x;
         y = e.pos.y;
+        weapon = e.weapon.id;
       } else if (ev.type === 'damage' || ev.type === 'death') {
         const v = w.entities.find((n) => n.id === ev.victimId);
         if (!v) continue;
@@ -311,7 +334,7 @@ export class AudioEngine {
       if (!p) continue;
       if (!this.voice(onPlayer)) continue;
 
-      if (ev.type === 'fire') this.shot(p.gain, p.pan, p.near);
+      if (ev.type === 'fire') this.shot(p.gain, p.pan, p.near, weapon);
       else if (ev.type === 'damage') this.impact(p.gain, p.pan, onPlayer);
       else if (ev.type === 'death') this.death(p.gain, p.pan);
       else this.reload(p.gain, p.pan, onPlayer);

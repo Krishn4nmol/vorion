@@ -11,9 +11,15 @@ export function sideOf(t: Team): 0 | 1 {
 
 /** v0 bot states. The behaviour tree in ai/ replaces this in v1. */
 export type BotState = 'idle' | 'chase' | 'shoot' | 'reload' | 'retreat';
+export type WeaponId = 'rifle' | 'smg' | 'shotgun' | 'marksman';
 
 export interface Weapon {
+  id: WeaponId;
+  name: string;
+  /** Projectiles per trigger pull. Only the shotgun exceeds 1. */
+  pellets: number;
   damage: number;
+  // ... rest unchanged
   fireRateTicks: number;
   spread: number;      // radians, max deviation
   bulletSpeed: number; // px per tick
@@ -75,19 +81,43 @@ export interface Bullet {
   distanceLeft: number;
 }
 
+/**
+ * Weapon table. Each entry trades along a different axis, so the choice
+ * changes how you fight rather than how much damage you do: the shotgun wants
+ * doorways, the marksman rifle wants the long road, the SMG wants to be moving.
+ */
+const TABLE: Record<WeaponId, Omit<Weapon, 'ammo' | 'lastFiredTick' | 'reloadEndTick'>> = {
+  rifle: {
+    id: 'rifle', name: 'RIFLE', pellets: 1,
+    damage: 12, fireRateTicks: 7, spread: 0.05,
+    bulletSpeed: 14, range: 640, magSize: 30, reloadTicks: 120,
+  },
+  smg: {
+    id: 'smg', name: 'SMG', pellets: 1,
+    damage: 8, fireRateTicks: 4, spread: 0.13,
+    bulletSpeed: 13, range: 420, magSize: 36, reloadTicks: 100,
+  },
+  shotgun: {
+    id: 'shotgun', name: 'SHOTGUN', pellets: 7,
+    damage: 9, fireRateTicks: 32, spread: 0.24,
+    bulletSpeed: 12, range: 290, magSize: 6, reloadTicks: 160,
+  },
+  marksman: {
+    id: 'marksman', name: 'MARKSMAN', pellets: 1,
+    damage: 38, fireRateTicks: 36, spread: 0.012,
+    bulletSpeed: 22, range: 940, magSize: 8, reloadTicks: 145,
+  },
+};
+
+export const WEAPON_IDS = Object.keys(TABLE) as WeaponId[];
+
+export function makeWeapon(id: WeaponId): Weapon {
+  const base = TABLE[id];
+  return { ...base, ammo: base.magSize, lastFiredTick: -9999, reloadEndTick: 0 };
+}
+
 export function makeRifle(): Weapon {
-  return {
-    damage: 12,
-    fireRateTicks: 7,
-    spread: 0.05,
-    bulletSpeed: 14,
-    range: 640,
-    ammo: 30,
-    magSize: 30,
-    reloadTicks: 120,
-    lastFiredTick: -9999,
-    reloadEndTick: 0,
-  };
+  return makeWeapon('rifle');
 }
 
 export function makeEntity(

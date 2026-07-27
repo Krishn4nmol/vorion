@@ -12,12 +12,37 @@
     <div id="menu">
       <div class="panel">
         <h1>V<span class="o">Ø</span>RI<span class="o">Ø</span>N</h1>
+        <p id="menu-title" class="paused-label"></p>
         <p class="tag">
           Tactical top-down squad shooter.<br />
           Lead your fireteam. Clear the compound.
         </p>
 
+        <div class="field">
+          <label for="scale">SCALE</label>
+          <select id="scale">
+            <option value="skirmish">SKIRMISH — 4v4, tight compound</option>
+            <option value="battle">BATTLE — 6v6, large map</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="weapon">LOADOUT</label>
+          <select id="weapon">
+            <option value="rifle">RIFLE — balanced</option>
+            <option value="smg">SMG — fast, short range</option>
+            <option value="shotgun">SHOTGUN — brutal up close</option>
+            <option value="marksman">MARKSMAN — one shot, long reach</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="volume">VOLUME</label>
+          <input id="volume" type="range" min="0" max="100" value="90" />
+        </div>
+
         <button id="start">PLAY</button>
+        <button id="restart" class="secondary">NEW MATCH WITH THESE SETTINGS</button>
 
         <div class="controls">
           <div><b>WASD</b> move</div>
@@ -28,7 +53,7 @@
           <div><b>O</b> order overlay</div>
           <div><b>N</b> minimap</div>
           <div><b>M</b> mute</div>
-          <div><b>ESC</b> menu</div>
+          <div><b>ESC</b> pause</div>
         </div>
       </div>
     </div>
