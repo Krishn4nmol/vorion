@@ -148,6 +148,16 @@ runtime. No engine, no assets, no licences.
 
 - **Procedural soldiers.** Legs track direction of travel, torso tracks aim, so
   a strafing unit reads as a person rather than a rotating blob.
+- **Four weapons.** Rifle, SMG, shotgun and marksman rifle, each trading along
+  a different axis rather than just doing more damage. Bots engage at a
+  fraction of their own weapon's range, so shotgun carriers close to knife
+  distance and marksmen hang back — emergent from the weapon table, with no
+  extra AI code. The shotgun fires seven pellets per trigger pull, each with
+  its own spread roll.
+- **Two scales.** Skirmish is 4v4 on a tight compound; Battle is 6v6 on a map
+  three times the area. Larger squads lengthen matches by only ~35%: more units
+  means more simultaneous engagements, so casualties accumulate faster and the
+  two effects nearly cancel.
 - **Procedural audio.** Gunshots, impacts, deaths and reloads are synthesised
   from filtered noise and oscillators. Distance attenuates volume *and* closes
   a lowpass, so far-off fire sounds duller — a range cue with no UI. Sounds
@@ -159,6 +169,9 @@ runtime. No engine, no assets, no licences.
 - **Fixed viewport.** The camera scales to show 880 world units vertically on
   any monitor, so sight ranges are a game rule rather than a property of your
   hardware. Threats with a clear shot from off-screen get edge markers.
+- **End-of-match scoreboard.** Kills, damage and accuracy per squad member,
+  accumulated from the same event bus the renderer and audio engine read —
+  four consumers of one channel, none coupled to the simulation.
 
 ---
 
@@ -178,7 +191,7 @@ GEMINI_MODEL=gemini-3.5-flash-lite
 ```
 
 Controls: `WASD` move · mouse aim · hold click to fire · `R` reload / restart ·
-`C` toggle commander · `O` order overlay · `N` minimap · `M` mute · `ESC` menu
+`C` toggle commander · `O` order overlay · `N` minimap · `M` mute · `ESC` pause
 
 ### Reproducing the evaluation
 
@@ -205,6 +218,11 @@ per day, roughly 100 matches.
   which is the leading explanation for the result.
 - The commander is model-agnostic: `type AskFn = (system, user) => Promise<string>`.
   Swapping providers is one function.
+- **The game and the experiment are configured differently.** The playable
+  build uses varied weapons and offers 6v6; the evaluation runs `createWorld`'s
+  defaults — uniform rifles, 4v4, 64×48 — which is what every figure above
+  describes. The 597-tick / 54% headless baseline was re-verified after each
+  gameplay change to keep those numbers honest.
 
 ## Stack
 
