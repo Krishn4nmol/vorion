@@ -26,7 +26,13 @@ export type GameEvent =
   | { type: 'fire'; tick: number; shooterId: number }
   | { type: 'damage'; tick: number; victimId: number; shooterId: number; amount: number }
   | { type: 'death'; tick: number; victimId: number; killerId: number }
-  | { type: 'reload'; tick: number; entityId: number };
+  | { type: 'reload'; tick: number; entityId: number }
+  /**
+   * Where a bullet stopped. Purely informational — nothing in the simulation
+   * reads it — but without it the renderer has no way to know a round struck a
+   * wall, since only entity hits produce damage.
+   */
+  | { type: 'impact'; tick: number; x: number; y: number; onEntity: boolean };
 
 export interface World {
   tick: number;
@@ -200,6 +206,13 @@ export function step(w: World, controllers: Map<number, Controller>): void {
   const hits = stepBullets(w.map, w.bullets, w.entities);
   for (const hit of hits) {
     const victim = hit.victim;
+    w.events.push({
+      type: 'impact',
+      tick: w.tick,
+      x: hit.bullet.pos.x,
+      y: hit.bullet.pos.y,
+      onEntity: victim !== null,
+    });
     if (!victim || !victim.alive) continue;
     victim.hp -= hit.bullet.damage;
     w.events.push({

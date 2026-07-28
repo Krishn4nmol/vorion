@@ -43,6 +43,8 @@ export const C = {
 } as const;
 
 export const VIEW_H = 880;
+/** How far walls throw their shadow, in world px. TILE is 32. */
+const SHADOW_OFF = 6;
 export interface Camera {
   x: number;
   y: number;
@@ -51,7 +53,21 @@ export interface Camera {
 export interface RenderState {
   camera: Camera;
   flashes: { x: number; y: number; life: number }[];
+  /** Additive light sources — muzzle flashes, for now. */
+  lights: { x: number; y: number; r: number; life: number }[];
+  particles: {
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    life: number;
+    decay: number;
+    warm: boolean;
+  }[];
   hitMarks: { x: number; y: number; life: number }[];
+  /** Directions the player has recently been shot from, in world radians. */
+  damageFrom: { angle: number; life: number }[];
+  killFeed: { killer: string; victim: string; friendlyKill: boolean; life: number }[];
   shake: number;
   zoom: number; // device px per world unit
   dpr: number;
@@ -87,7 +103,11 @@ export function createRenderState(): RenderState {
   return {
     camera: { x: 0, y: 0 },
     flashes: [],
+    lights: [],
+    particles: [],
     hitMarks: [],
+    damageFrom: [],
+    killFeed: [],
     shake: 0,
     zoom: 1,
     dpr: 1,
@@ -115,22 +135,87 @@ export function teamColor(e: Entity): string {
 }
 
 /** Feed tick events into the visual-effects layer. */
-export function ingestEvents(rs: RenderState, w: World, events: GameEvent[]): void {
+/** Feed tick events into the visual-effects layer. */
+export function ingestEvents(
+  rs: RenderState,
+  w: World,
+  events: GameEvent[],
+  playerId: number,
+): void {
   for (const ev of events) {
     if (ev.type === 'fire') {
       const e = w.entities.find((x) => x.id === ev.shooterId);
       if (e) {
-        rs.flashes.push({
-          x: e.pos.x + Math.cos(e.aim) * (e.radius + 4),
-          y: e.pos.y + Math.sin(e.aim) * (e.radius + 4),
-          life: 1,
-        });
+        const mx = e.pos.x + Math.cos(e.aim) * (e.radius + 4);
+        const my = e.pos.y + Math.sin(e.aim) * (e.radius + 4);
+        rs.flashes.push({ x: mx, y: my, life: 1 });
+        // Bigger weapons throw more light. The shotgun's muzzle blast lighting
+        // up a whole room is most of why it feels heavier than the SMG.
+        const radius =
+          e.weapon.id === 'shotgun'
+            ? 150
+            : e.weapon.id === 'marksman'
+              ? 120
+              : e.weapon.id === 'smg'
+                ? 72
+                : 95;
+        rs.lights.push({ x: mx, y: my, r: radius, life: 1 });
       }
     } else if (ev.type === 'damage') {
       const v = w.entities.find((x) => x.id === ev.victimId);
       if (v) rs.hitMarks.push({ x: v.pos.x, y: v.pos.y, life: 1 });
+
+      // Being shot from off-screen is otherwise unreadable: you lose health
+      // with no indication of which way to turn.
+      if (v && v.id === playerId) {
+        const shooter = w.entities.find((x) => x.id === ev.shooterId);
+        if (shooter) {
+          const angle = Math.atan2(shooter.pos.y - v.pos.y, shooter.pos.x - v.pos.x);
+          // Merge with a recent mark from roughly the same bearing rather than
+          // stacking six overlapping arcs from one shotgun blast.
+          const near = rs.damageFrom.find((d) => Math.abs(d.angle - angle) < 0.3);
+          if (near) near.life = 1;
+          else rs.damageFrom.push({ angle, life: 1 });
+        }
+      }
     } else if (ev.type === 'death') {
       rs.shake = Math.min(1, rs.shake + 0.5);
+
+      // Most of a match happens off-screen. Without this you never learn that
+      // your squad won a fight two buildings away.
+      const label = (id: number): string => {
+        if (id === playerId) return 'YOU';
+        const ent = w.entities.find((x) => x.id === id);
+        if (!ent) return `#${id}`;
+        return ent.team === 'enemy' ? `HOSTILE #${id}` : `ALLY #${id}`;
+      };
+      const killer = w.entities.find((x) => x.id === ev.killerId);
+      rs.killFeed.push({
+        killer: label(ev.killerId),
+        victim: label(ev.victimId),
+        friendlyKill: !killer || killer.team !== 'enemy',
+        life: 1,
+      });
+      if (rs.killFeed.length > 6) rs.killFeed.shift();
+    } else if (ev.type === 'impact') {
+      // Wall strikes throw a tight cone of sparks; body hits throw a slower,
+      // wider spray. Capped so a shotgun blast into a wall — seven pellets at
+      // once — cannot flood the buffer.
+      if (rs.particles.length > 260) continue;
+      const n = ev.onEntity ? 6 : 5;
+      for (let i = 0; i < n; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const speed = ev.onEntity ? 0.6 + Math.random() * 1.6 : 1.2 + Math.random() * 3.2;
+        rs.particles.push({
+          x: ev.x,
+          y: ev.y,
+          vx: Math.cos(a) * speed,
+          vy: Math.sin(a) * speed,
+          life: 1,
+          decay: ev.onEntity ? 0.055 : 0.085,
+          warm: !ev.onEntity,
+        });
+      }
     }
   }
 }
@@ -140,6 +225,27 @@ function decay(rs: RenderState): void {
   for (const h of rs.hitMarks) h.life -= 0.08;
   rs.flashes = rs.flashes.filter((f) => f.life > 0);
   rs.hitMarks = rs.hitMarks.filter((h) => h.life > 0);
+  for (const d of rs.damageFrom) d.life -= 0.022; // ~0.75s, long enough to react
+  rs.damageFrom = rs.damageFrom.filter((d) => d.life > 0);
+  for (const k of rs.killFeed) k.life -= 0.005; // ~3.3s
+  rs.killFeed = rs.killFeed.filter((k) => k.life > 0);
+
+  // Slower than the sprite flash: light lingers a frame or two longer than the
+  // spark, which is what stops rapid fire looking like a strobe.
+  for (const l of rs.lights) l.life -= 0.13;
+  rs.lights = rs.lights.filter((l) => l.life > 0);
+
+  for (const p of rs.particles) {
+    p.x += p.vx;
+    p.y += p.vy;
+    // Drag rather than gravity: this is a top-down view, so "down" is not a
+    // direction. Sparks slow and fade in place.
+    p.vx *= 0.9;
+    p.vy *= 0.9;
+    p.life -= p.decay;
+  }
+  rs.particles = rs.particles.filter((p) => p.life > 0);
+
   rs.shake *= 0.85;
 }
 
@@ -183,30 +289,22 @@ export function render(
   const tx1 = Math.min(w.map.w, Math.ceil((rs.camera.x + vw) / TILE) + 1);
   const ty1 = Math.min(w.map.h, Math.ceil((rs.camera.y + vh) / TILE) + 1);
 
+  // Three passes rather than one. A shadow has to sit on top of the floor but
+  // underneath the wall casting it, which a single pass cannot order correctly:
+  // a wall drawn at (x,y) would be painted before the floor at (x+1,y+1).
+  const isSolid = (tx: number, ty: number): boolean =>
+    tileAt(w.map, tx, ty) === T_COVER || isWallTile(w.map, tx, ty);
+
+  // Pass 1 — floors.
   for (let ty = ty0; ty < ty1; ty++) {
     for (let tx = tx0; tx < tx1; tx++) {
+      if (isSolid(tx, ty)) continue;
+      const t = tileAt(w.map, tx, ty);
       const px = tx * TILE;
       const py = ty * TILE;
-      const t = tileAt(w.map, tx, ty);
       const checker = (tx + ty) % 2 === 0;
 
-      if (t === T_COVER) {
-        ctx.fillStyle = C.cover;
-        ctx.fillRect(px, py, TILE, TILE);
-        ctx.fillStyle = C.coverTop;
-        ctx.fillRect(px + 3, py + 3, TILE - 6, 3);
-        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(px + 0.5, py + 0.5, TILE - 1, TILE - 1);
-      } else if (isWallTile(w.map, tx, ty)) {
-        ctx.fillStyle = C.wall;
-        ctx.fillRect(px, py, TILE, TILE);
-        // lit edge wherever a wall meets something open above it
-        if (!isWallTile(w.map, tx, ty - 1)) {
-          ctx.fillStyle = C.wallTop;
-          ctx.fillRect(px, py, TILE, 3);
-        }
-      } else if (t === T_INTERIOR) {
+      if (t === T_INTERIOR) {
         ctx.fillStyle = checker ? C.interior : C.interiorAlt;
         ctx.fillRect(px, py, TILE, TILE);
       } else if (t === T_DOOR) {
@@ -217,9 +315,50 @@ export function render(
       } else if (t === T_ROAD) {
         ctx.fillStyle = C.road;
         ctx.fillRect(px, py, TILE, TILE);
-      } else if (t === T_GROUND) {
+      } else {
         ctx.fillStyle = checker ? C.ground : C.groundAlt;
         ctx.fillRect(px, py, TILE, TILE);
+      }
+    }
+  }
+
+  // Pass 2 — shadows. Offset down and right, matching the lit top edge already
+  // drawn on walls, so the whole map reads as lit from above-left.
+  ctx.fillStyle = 'rgba(0,0,0,0.34)';
+  for (let ty = ty0; ty < ty1; ty++) {
+    for (let tx = tx0; tx < tx1; tx++) {
+      if (!isSolid(tx, ty)) continue;
+      // Skip tiles buried inside a solid mass: their shadow would be entirely
+      // covered by the neighbours drawn over it in pass 3.
+      if (isSolid(tx + 1, ty) && isSolid(tx, ty + 1)) continue;
+      ctx.fillRect(tx * TILE + SHADOW_OFF, ty * TILE + SHADOW_OFF, TILE, TILE);
+    }
+  }
+
+  // Pass 3 — solids, painted over any shadow that fell on them.
+  for (let ty = ty0; ty < ty1; ty++) {
+    for (let tx = tx0; tx < tx1; tx++) {
+      if (!isSolid(tx, ty)) continue;
+      const t = tileAt(w.map, tx, ty);
+      const px = tx * TILE;
+      const py = ty * TILE;
+
+      if (t === T_COVER) {
+        ctx.fillStyle = C.cover;
+        ctx.fillRect(px, py, TILE, TILE);
+        ctx.fillStyle = C.coverTop;
+        ctx.fillRect(px + 3, py + 3, TILE - 6, 3);
+        ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px + 0.5, py + 0.5, TILE - 1, TILE - 1);
+      } else {
+        ctx.fillStyle = C.wall;
+        ctx.fillRect(px, py, TILE, TILE);
+        // lit edge wherever a wall meets something open above it
+        if (!isWallTile(w.map, tx, ty - 1)) {
+          ctx.fillStyle = C.wallTop;
+          ctx.fillRect(px, py, TILE, 3);
+        }
       }
     }
   }
@@ -333,6 +472,38 @@ export function render(
     ctx.arc(h.x, h.y, 14 * (1 - h.life) + 6, 0, Math.PI * 2);
     ctx.stroke();
   }
+
+  // --- particles ------------------------------------------------------------
+  // Drawn as short streaks along their own velocity, which reads as motion at
+  // this size far better than dots do.
+  ctx.lineCap = 'round';
+  for (const p of rs.particles) {
+    ctx.globalAlpha = Math.min(1, p.life * 1.4);
+    ctx.strokeStyle = p.warm ? '#ffd9a0' : '#d8583f';
+    ctx.lineWidth = p.warm ? 1.4 : 1.8;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(p.x - p.vx * 1.6, p.y - p.vy * 1.6);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  // --- lighting -------------------------------------------------------------
+  // Additive pass over the finished scene, still inside the camera transform.
+  // 'lighter' brightens whatever is underneath rather than painting over it,
+  // so walls and soldiers near a muzzle catch the light for free.
+  ctx.globalCompositeOperation = 'lighter';
+  for (const l of rs.lights) {
+    const t = l.life * l.life; // square it: light falls off fast, then lingers
+    const g = ctx.createRadialGradient(l.x, l.y, 0, l.x, l.y, l.r);
+    g.addColorStop(0, `rgba(255, 226, 170, ${0.42 * t})`);
+    g.addColorStop(0.35, `rgba(255, 176, 96, ${0.16 * t})`);
+    g.addColorStop(1, 'rgba(255, 150, 60, 0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(l.x - l.r, l.y - l.r, l.r * 2, l.r * 2);
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
   ctx.globalAlpha = 1;
   ctx.restore();
 
@@ -400,6 +571,8 @@ function drawHud(
     ctx.globalAlpha = 1;
   }
 
+  drawDamageFeedback(ctx, rs, me, W, H);
+
   // telemetry strip — the deterministic sim is the point, so it's on screen
   ctx.font = '11px ui-monospace, "Cascadia Mono", Consolas, monospace';
   ctx.textAlign = 'left';
@@ -418,6 +591,7 @@ function drawHud(
   }
   drawMinimap(ctx, w, rs, followId);
   drawCommanderPanel(ctx, rs, W);
+  drawKillFeed(ctx, rs);
   const baseY = H - 26;
   ctx.textAlign = 'left';
 
@@ -779,4 +953,80 @@ function drawScoreboard(
   ctx.font = '11px ' + MONO;
   ctx.fillStyle = C.hudDim;
   ctx.fillText('[R] NEW MATCH      [ESC] MENU', W / 2, py + panelH - 18);
+}
+
+/**
+ * Red vignette plus edge arcs pointing at whatever last hit you. The vignette
+ * also rises as health falls, so a wounded player feels wounded without having
+ * to read the health bar.
+ */
+function drawDamageFeedback(
+  ctx: CanvasRenderingContext2D,
+  rs: RenderState,
+  me: Entity | undefined,
+  W: number,
+  H: number,
+): void {
+  if (!me || !me.alive || rs.attract) return;
+
+  const recent = rs.damageFrom.reduce((m, d) => Math.max(m, d.life), 0);
+  const wounded = Math.max(0, 1 - me.hp / 45); // ramps in below 45 hp
+  const intensity = Math.min(0.75, recent * 0.5 + wounded * 0.4);
+
+  if (intensity > 0.01) {
+    const r = Math.hypot(W, H) / 2;
+    const g = ctx.createRadialGradient(W / 2, H / 2, r * 0.45, W / 2, H / 2, r);
+    g.addColorStop(0, 'rgba(190, 40, 25, 0)');
+    g.addColorStop(1, `rgba(190, 40, 25, ${intensity})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  const radius = Math.min(W, H) * 0.3;
+  ctx.lineCap = 'round';
+  for (const d of rs.damageFrom) {
+    ctx.globalAlpha = d.life * 0.85;
+    ctx.strokeStyle = '#ff6a48';
+    ctx.lineWidth = 5;
+    ctx.beginPath();
+    ctx.arc(W / 2, H / 2, radius, d.angle - 0.32, d.angle + 0.32);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.lineCap = 'butt';
+}
+
+/**
+ * Sits under the minimap on the left, clear of the commander panel. Entries
+ * are captured at the moment of death rather than looked up later, since
+ * labels depend on who was alive at the time.
+ */
+function drawKillFeed(ctx: CanvasRenderingContext2D, rs: RenderState): void {
+  if (rs.killFeed.length === 0) return;
+
+  const x = 14;
+  let y = 205; // below the minimap panel
+  ctx.textAlign = 'left';
+  ctx.font = '10px ' + MONO;
+
+  for (const k of rs.killFeed) {
+    // Fade only over the final third of the lifetime, so entries stay legible
+    // while they matter and then leave cleanly.
+    const alpha = Math.min(1, k.life * 3);
+    ctx.globalAlpha = alpha;
+
+    ctx.fillStyle = k.friendlyKill ? C.ally : C.enemy;
+    ctx.fillText(k.killer, x, y);
+    const w1 = ctx.measureText(k.killer).width;
+
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText(' \u25b8 ', x + w1, y);
+    const w2 = ctx.measureText(' \u25b8 ').width;
+
+    ctx.fillStyle = k.friendlyKill ? C.enemy : C.ally;
+    ctx.fillText(k.victim, x + w1 + w2, y);
+
+    y += 15;
+  }
+  ctx.globalAlpha = 1;
 }

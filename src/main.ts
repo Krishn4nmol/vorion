@@ -252,7 +252,7 @@ function frame(now: number): void {
     steps++;
     if (!world.over && !paused) {
       step(world, controllers);
-      ingestEvents(rs, world, world.events);
+      ingestEvents(rs, world, world.events, playerId);
       // Fire-and-forget: async mode never blocks the render loop.
       rs.stats?.ingest(world.events);
       audio.ingest(world, rs, world.events, playerId, canvas.width / rs.zoom);

@@ -322,12 +322,14 @@ export class AudioEngine {
         x = v.pos.x;
         y = v.pos.y;
         onPlayer = v.id === playerId;
-      } else {
+      } else if (ev.type === 'reload') {
         const e = w.entities.find((n) => n.id === ev.entityId);
         if (!e) continue;
         x = e.pos.x;
         y = e.pos.y;
         onPlayer = e.id === playerId;
+      } else {
+        continue; // impact events are rendered, not heard
       }
 
       const p = this.place(rs, x, y, viewW);
