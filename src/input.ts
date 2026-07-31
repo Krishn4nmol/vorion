@@ -5,11 +5,14 @@ export interface InputState {
   firing: boolean;
   /** True once per physical key press, then cleared. */
   consumePress: (key: string) => boolean;
+  /** True once per right-click, then cleared. */
+  consumeRightClick: () => boolean;
 }
 
 export function attachInput(canvas: HTMLCanvasElement): InputState {
   const keys = new Set<string>();
   const pressed = new Set<string>();
+  let rightClicked = false;
 
   const state: InputState = {
     keys,
@@ -20,6 +23,11 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
       if (!pressed.has(key)) return false;
       pressed.delete(key);
       return true;
+    },
+    consumeRightClick: () => {
+      const r = rightClicked;
+      rightClicked = false;
+      return r;
     },
   };
 
@@ -35,6 +43,7 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
   window.addEventListener('blur', () => {
     keys.clear();
     pressed.clear();
+    rightClicked = false;
     state.firing = false;
   });
 
@@ -45,11 +54,14 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
     state.mouseY = (e.clientY - r.top) * (canvas.height / r.height);
   });
 
-  canvas.addEventListener('mousedown', () => {
-    state.firing = true;
+  // Left fires, right commands. Previously any button set firing, so the
+  // command binding would also shoot the gun.
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) state.firing = true;
+    if (e.button === 2) rightClicked = true;
   });
-  window.addEventListener('mouseup', () => {
-    state.firing = false;
+  window.addEventListener('mouseup', (e) => {
+    if (e.button === 0) state.firing = false;
   });
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 

@@ -68,6 +68,10 @@ export interface RenderState {
   /** Directions the player has recently been shot from, in world radians. */
   damageFrom: { angle: number; life: number }[];
   killFeed: { killer: string; victim: string; friendlyKill: boolean; life: number }[];
+  /** Confirmation of the player's last squad order. */
+  commandToast: { text: string; life: number } | null;
+  /** World point of the last order, drawn as a marker. */
+  commandMark: { x: number; y: number; life: number } | null;
   shake: number;
   zoom: number; // device px per world unit
   dpr: number;
@@ -108,6 +112,8 @@ export function createRenderState(): RenderState {
     hitMarks: [],
     damageFrom: [],
     killFeed: [],
+    commandToast: null,
+    commandMark: null,
     shake: 0,
     zoom: 1,
     dpr: 1,
@@ -197,6 +203,25 @@ export function ingestEvents(
         life: 1,
       });
       if (rs.killFeed.length > 6) rs.killFeed.shift();
+    } else if (ev.type === 'explosion') {
+      rs.shake = Math.min(1, rs.shake + 0.9);
+      rs.lights.push({ x: ev.x, y: ev.y, r: ev.radius * 2.4, life: 1 });
+      // A lot of debris, thrown outward from the centre rather than in a
+      // random cloud, so the blast reads as directional force.
+      const n = 26;
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * Math.PI * 2 + Math.random() * 0.2;
+        const speed = 2.5 + Math.random() * 5;
+        rs.particles.push({
+          x: ev.x,
+          y: ev.y,
+          vx: Math.cos(a) * speed,
+          vy: Math.sin(a) * speed,
+          life: 1,
+          decay: 0.03,
+          warm: true,
+        });
+      }
     } else if (ev.type === 'impact') {
       // Wall strikes throw a tight cone of sparks; body hits throw a slower,
       // wider spray. Capped so a shotgun blast into a wall — seven pellets at
@@ -229,6 +254,14 @@ function decay(rs: RenderState): void {
   rs.damageFrom = rs.damageFrom.filter((d) => d.life > 0);
   for (const k of rs.killFeed) k.life -= 0.005; // ~3.3s
   rs.killFeed = rs.killFeed.filter((k) => k.life > 0);
+  if (rs.commandToast) {
+    rs.commandToast.life -= 0.012;
+    if (rs.commandToast.life <= 0) rs.commandToast = null;
+  }
+  if (rs.commandMark) {
+    rs.commandMark.life -= 0.01;
+    if (rs.commandMark.life <= 0) rs.commandMark = null;
+  }
 
   // Slower than the sprite flash: light lingers a frame or two longer than the
   // spark, which is what stops rapid fire looking like a strobe.
@@ -473,6 +506,49 @@ export function render(
     ctx.stroke();
   }
 
+  // --- grenades -------------------------------------------------------------
+  for (const g of w.grenades) {
+    // Blink faster as the fuse runs down — the only warning anyone gets.
+    const urgency = 1 - g.fuse / 130;
+    const blink = Math.sin(g.fuse * (0.3 + urgency * 0.9)) > 0;
+    ctx.fillStyle = '#3a4450';
+    ctx.beginPath();
+    ctx.arc(g.pos.x, g.pos.y, 4.5, 0, Math.PI * 2);
+    ctx.fill();
+    if (blink) {
+      ctx.fillStyle = '#ff8a4a';
+      ctx.beginPath();
+      ctx.arc(g.pos.x, g.pos.y, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    // Danger ring, so you can judge whether you are inside the blast.
+    ctx.globalAlpha = 0.12 + urgency * 0.2;
+    ctx.strokeStyle = C.danger;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(g.pos.x, g.pos.y, 96, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // --- squad order marker ---------------------------------------------------
+  if (rs.commandMark) {
+    const m = rs.commandMark;
+    ctx.globalAlpha = m.life;
+    ctx.strokeStyle = C.accent;
+    ctx.lineWidth = 2;
+    // Expands outward then fades — reads as a command landing rather than a
+    // static dot sitting on the ground.
+    const r = 6 + (1 - m.life) * 22;
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(m.x, m.y, 3, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   // --- particles ------------------------------------------------------------
   // Drawn as short streaks along their own velocity, which reads as motion at
   // this size far better than dots do.
@@ -592,6 +668,14 @@ function drawHud(
   drawMinimap(ctx, w, rs, followId);
   drawCommanderPanel(ctx, rs, W);
   drawKillFeed(ctx, rs);
+  if (rs.commandToast) {
+    ctx.globalAlpha = Math.min(1, rs.commandToast.life * 3);
+    ctx.textAlign = 'center';
+    ctx.font = '11px ' + MONO;
+    ctx.fillStyle = C.accent;
+    ctx.fillText(rs.commandToast.text, W / 2, H - 68);
+    ctx.globalAlpha = 1;
+  }
   const baseY = H - 26;
   ctx.textAlign = 'left';
 
@@ -646,6 +730,12 @@ function drawHud(
     ctx.fillStyle = C.hudDim;
     ctx.fillText(wp.name, W - 14, baseY - 20);
   }
+
+  // grenades — left of the ammo block
+  ctx.textAlign = 'right';
+  ctx.font = '11px ui-monospace, "Cascadia Mono", Consolas, monospace';
+  ctx.fillStyle = me.grenades > 0 ? C.hudText : C.hudDim;
+  ctx.fillText(`✦ ${me.grenades}`, W - 120, baseY - 2);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 }

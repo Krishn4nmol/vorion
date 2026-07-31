@@ -69,6 +69,20 @@ export interface Entity {
   pathIndex: number;
   targetId: number | null;
   repathTick: number;
+  grenades: number;
+}
+
+/**
+ * Thrown explosive. Decelerates to a stop, then detonates on a fuse — so a
+ * grenade lands where you aimed rather than travelling until it hits something.
+ */
+export interface Grenade {
+  id: number;
+  ownerId: number;
+  team: Team;
+  pos: Vec2;
+  vel: Vec2;
+  fuse: number; // ticks remaining
 }
 
 export interface Bullet {
@@ -144,6 +158,7 @@ export function makeEntity(
     pathIndex: 0,
     targetId: null,
     repathTick: 0,
+    grenades: 2,
   };
 }
 

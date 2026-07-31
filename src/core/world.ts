@@ -9,12 +9,15 @@ import {
   type Entity,
   type Bullet,
   type WeaponId,
+  type Grenade, 
+  type Vec2
 } from './entity';
 import {
   generateMap,
   nearestFloor,
   tileCenter,
   lineOfSight,
+  isWallAt,
   type GameMap,
 } from './map';
 import { moveEntity, stepBullets } from './physics';
@@ -32,7 +35,8 @@ export type GameEvent =
    * reads it — but without it the renderer has no way to know a round struck a
    * wall, since only entity hits produce damage.
    */
-  | { type: 'impact'; tick: number; x: number; y: number; onEntity: boolean };
+  | { type: 'impact'; tick: number; x: number; y: number; onEntity: boolean }
+  | { type: 'explosion'; tick: number; x: number; y: number; radius: number };
 
 export interface World {
   tick: number;
@@ -41,6 +45,7 @@ export interface World {
   map: GameMap;
   entities: Entity[];
   bullets: Bullet[];
+  grenades: Grenade[];
   events: GameEvent[]; // cleared each tick; drained by render, eval and trace logging
   nextId: number;
   over: boolean;
@@ -58,11 +63,13 @@ export interface WorldOptions {
   weapons?: 'uniform' | 'varied';
   /** Overrides the player's weapon regardless of the mode above. */
   playerWeapon?: WeaponId;
+  /** Grenades per unit. 0 keeps bot behaviour identical to the eval baseline. */
+  grenades?: number;
 }
 
 export function createWorld(seed: number, opts: WorldOptions = {}): World {
   const { mapW = 64, mapH = 48, allies = 3, enemies = 4, weapons = 'uniform',
-  playerWeapon,} = opts;
+  playerWeapon, grenades = 0,} = opts;
   const rng = new SeededRNG(seed);
   const map = generateMap(mapW, mapH, rng);
 
@@ -73,6 +80,7 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
     map,
     entities: [],
     bullets: [],
+    grenades: [],
     events: [],
     nextId: 1,
     over: false,
@@ -88,6 +96,7 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
   const spawn = (team: Entity['team'], tx: number, ty: number): Entity => {
     const t = nearestFloor(map, tx, ty);
     const e = makeEntity(world.nextId++, team, tileCenter(t.x, t.y), pickWeapon(team));
+    e.grenades = grenades;
     world.entities.push(e);
     return e;
   };
@@ -163,6 +172,101 @@ export function fire(w: World, e: Entity, angle: number): void {
   w.events.push({ type: 'fire', tick: w.tick, shooterId: e.id });
 }
 
+export const GRENADE_FUSE = 130; // ~2.2s
+export const GRENADE_RADIUS = 96; // px, three tiles
+export const GRENADE_MAX_THROW = 330; // px
+const GRENADE_DRAG = 0.93;
+
+/**
+ * Throws toward a world point. Initial speed is solved from the drag so the
+ * grenade comes to rest at roughly the aimed spot: for a geometric decay the
+ * total distance is v0 / (1 - drag).
+ */
+export function throwGrenade(w: World, e: Entity, target: Vec2): boolean {
+  if (e.grenades <= 0) return false;
+  e.grenades--;
+
+  const dx = target.x - e.pos.x;
+  const dy = target.y - e.pos.y;
+  const d = Math.min(GRENADE_MAX_THROW, Math.hypot(dx, dy)) || 1;
+  const v0 = d * (1 - GRENADE_DRAG);
+  const a = Math.atan2(dy, dx);
+
+  w.grenades.push({
+    id: w.nextId++,
+    ownerId: e.id,
+    team: e.team,
+    pos: { x: e.pos.x + Math.cos(a) * (e.radius + 3), y: e.pos.y + Math.sin(a) * (e.radius + 3) },
+    vel: { x: Math.cos(a) * v0, y: Math.sin(a) * v0 },
+    fuse: GRENADE_FUSE,
+  });
+  return true;
+}
+
+/**
+ * Advances grenades and detonates the expired ones. Blast damage falls off
+ * with distance and does NOT pass through walls, so a corner is real cover —
+ * and it hurts both sides, which is what makes throwing a decision rather than
+ * a free action.
+ */
+function stepGrenades(w: World): void {
+  const survivors: Grenade[] = [];
+
+  for (const g of w.grenades) {
+    // Axis-separated like entity movement, and bouncing rather than stopping,
+    // so a grenade thrown into a doorway behaves plausibly.
+    const nx = g.pos.x + g.vel.x;
+    if (!isWallAt(w.map, nx, g.pos.y)) g.pos.x = nx;
+    else g.vel.x *= -0.4;
+    const ny = g.pos.y + g.vel.y;
+    if (!isWallAt(w.map, g.pos.x, ny)) g.pos.y = ny;
+    else g.vel.y *= -0.4;
+
+    g.vel.x *= GRENADE_DRAG;
+    g.vel.y *= GRENADE_DRAG;
+    g.fuse--;
+
+    if (g.fuse > 0) {
+      survivors.push(g);
+      continue;
+    }
+
+    w.events.push({
+      type: 'explosion',
+      tick: w.tick,
+      x: g.pos.x,
+      y: g.pos.y,
+      radius: GRENADE_RADIUS,
+    });
+
+    for (const e of w.entities) {
+      if (!e.alive) continue;
+      const d = dist(e.pos, g.pos);
+      if (d > GRENADE_RADIUS) continue;
+      if (!lineOfSight(w.map, g.pos, e.pos)) continue;
+
+      const falloff = 1 - d / GRENADE_RADIUS;
+      const amount = Math.round(12 + 48 * falloff * falloff);
+      e.hp -= amount;
+      w.events.push({
+        type: 'damage',
+        tick: w.tick,
+        victimId: e.id,
+        shooterId: g.ownerId,
+        amount,
+      });
+      if (e.hp <= 0) {
+        e.hp = 0;
+        e.alive = false;
+        w.events.push({ type: 'death', tick: w.tick, victimId: e.id, killerId: g.ownerId });
+      }
+    }
+  }
+
+  w.grenades.length = 0;
+  w.grenades.push(...survivors);
+}
+
 export function startReload(w: World, e: Entity): void {
   const wp = e.weapon;
   if (wp.reloadEndTick > w.tick || wp.ammo === wp.magSize) return;
@@ -189,6 +293,7 @@ export type Controller = (w: World, e: Entity) => void;
 export function step(w: World, controllers: Map<number, Controller>): void {
   w.events.length = 0;
 
+  stepGrenades(w);
   finishReloads(w);
 
   for (const e of w.entities) {

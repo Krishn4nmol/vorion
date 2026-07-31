@@ -216,6 +216,48 @@ export class AudioEngine {
     this.release(src);
   }
 
+  /**
+   * Explosion: a long noise tail through a falling lowpass over a deep sine
+   * boom. Louder and longer than anything else in the mix, and it bypasses the
+   * voice cap — a grenade going off should never be swallowed by gunfire.
+   */
+  private blast(gain: number, pan: number): void {
+    const ctx = this.ctx!;
+    const t = ctx.currentTime;
+    const panner = ctx.createStereoPanner();
+    panner.pan.value = pan;
+
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise!;
+    src.playbackRate.value = 0.45;
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(3600, t);
+    lp.frequency.exponentialRampToValueAtTime(120, t + 0.7);
+
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(gain * 1.1, t + 0.005);
+    env.gain.exponentialRampToValueAtTime(0.0001, t + 0.8);
+
+    src.connect(lp).connect(env).connect(panner).connect(this.master!);
+    src.start(t, Math.random() * 0.2, 0.85);
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(110, t);
+    osc.frequency.exponentialRampToValueAtTime(28, t + 0.45);
+    const oenv = ctx.createGain();
+    oenv.gain.setValueAtTime(gain * 0.9, t);
+    oenv.gain.exponentialRampToValueAtTime(0.0001, t + 0.5);
+    osc.connect(oenv).connect(panner);
+    osc.start(t);
+    osc.stop(t + 0.55);
+
+    this.release(src);
+  }
+
   /** Death: a descending filtered thud. */
   private death(gain: number, pan: number): void {
     const ctx = this.ctx!;
@@ -322,6 +364,10 @@ export class AudioEngine {
         x = v.pos.x;
         y = v.pos.y;
         onPlayer = v.id === playerId;
+      } else if (ev.type === 'explosion') {
+        x = ev.x;
+        y = ev.y;
+        onPlayer = true; // priority voice: never drop a blast
       } else if (ev.type === 'reload') {
         const e = w.entities.find((n) => n.id === ev.entityId);
         if (!e) continue;
@@ -339,6 +385,7 @@ export class AudioEngine {
       if (ev.type === 'fire') this.shot(p.gain, p.pan, p.near, weapon);
       else if (ev.type === 'damage') this.impact(p.gain, p.pan, onPlayer);
       else if (ev.type === 'death') this.death(p.gain, p.pan);
+      else if (ev.type === 'explosion') this.blast(p.gain, p.pan);
       else this.reload(p.gain, p.pan, onPlayer);
     }
   }

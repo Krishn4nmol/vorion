@@ -4,12 +4,16 @@ import {
   startReload,
   canFire,
   isHostile,
+  throwGrenade, 
+  GRENADE_RADIUS,
+  GRENADE_MAX_THROW, 
+  GRENADE_FUSE,
   type Controller,
   type World,
 } from '../core/world';
 import { moveToward } from '../core/physics';
 import { findPath } from './pathfinding';
-import { acquireTarget, findCover, aimWithLead, hasFiringLane } from './vision';
+import { acquireTarget, findCover, aimWithLead, hasFiringLane, canSee } from './vision';
 
 const REPATH_INTERVAL = 30; // ticks
 const WAYPOINT_REACHED = 12; // px
@@ -18,6 +22,7 @@ const RETREAT_TICKS = 180;
 const STALEMATE_TICKS = 600; // no damage anywhere for this long -> everyone charges
 const ARRIVED = 40; // px, close enough to consider a move order complete
 const SUPPRESS_HOLD = 300; // px, how far a suppressing unit will push toward its mark
+const GRENADE_COOLDOWN = 300; // ticks between throws by the same unit
 
 /**
  * Bots fight at a fraction of their weapon's effective range rather than a
@@ -93,6 +98,46 @@ function awayFromThreats(w: World, e: Entity): Vec2 {
   }
   const len = Math.hypot(dx, dy) || 1;
   return { x: e.pos.x + (dx / len) * 200, y: e.pos.y + (dy / len) * 200 };
+}
+
+/**
+ * Decides whether to throw, and where.
+ *
+ * The rule is deliberately conservative: only when the grenade beats shooting.
+ * That means either the target is behind cover the bot cannot shoot through, or
+ * two or more hostiles are clustered. It never throws with a squadmate in the
+ * blast — friendly fire is real, so a bot that ignored it would lose more units
+ * than it killed.
+ */
+function tryGrenade(w: World, e: Entity, target: Entity, lane: boolean): boolean {
+  if (e.grenades <= 0) return false;
+
+  const d = dist(e.pos, target.pos);
+  // Too far to reach, or close enough that the thrower is inside its own blast.
+  if (d > GRENADE_MAX_THROW || d < GRENADE_RADIUS * 1.3) return false;
+  if (!canSee(w.map, e.pos, target.pos, GRENADE_MAX_THROW)) return false;
+
+  // Lead the throw: the fuse is over two seconds, and a moving target will not
+  // be standing where it is now.
+  const lead = GRENADE_FUSE * 0.45;
+  const aim = {
+    x: target.pos.x + target.vel.x * lead,
+    y: target.pos.y + target.vel.y * lead,
+  };
+
+  let hostiles = 0;
+  for (const o of w.entities) {
+    if (!o.alive) continue;
+    if (dist(o.pos, aim) > GRENADE_RADIUS * 0.9) continue;
+    if (sideOf(o.team) === sideOf(e.team)) return false; // squadmate in the blast
+    hostiles++;
+  }
+  if (hostiles === 0) return false;
+
+  // Worth a grenade only if shooting is not already working.
+  if (hostiles < 2 && lane) return false;
+
+  return throwGrenade(w, e, aim);
 }
 
 /**
@@ -182,6 +227,7 @@ function executeOrder(w: World, e: Entity, order: Order, target: Entity | null):
  */
 export function makeBotController(): Controller {
   const retreatUntil = new Map<number, number>();
+  const grenadeReady = new Map<number, number>();
 
   // Stalemate detection, computed once per tick and shared by every bot.
   let lastHpSum = -1;
@@ -257,6 +303,10 @@ export function makeBotController(): Controller {
           const lane = hasFiringLane(w.map, e.pos, target.pos, e.radius);
           // A flanking unit avoids picking long-range fights it was sent to
           // avoid, but always returns fire on anything close enough to hurt it.
+          const nextThrow = grenadeReady.get(e.id) ?? 0;
+          if (w.tick >= nextThrow && tryGrenade(w, e, target, lane)) {
+          grenadeReady.set(e.id, w.tick + GRENADE_COOLDOWN);
+          }
           const engageRange =
             order.kind === 'flank' ? preferredRange(e) : e.weapon.range;
           if (canFire(w, e) && lane && dist(e.pos, target.pos) <= engageRange) {

@@ -1,4 +1,4 @@
-import { createWorld, step, fire, startReload, canFire, type Controller, type World } from './core/world';
+import { createWorld, step, fire, startReload, canFire, throwGrenade, type Controller, type World } from './core/world';
 import { makeBotController } from './ai/behaviour';
 import { createRenderState, render, ingestEvents, screenToWorld, VIEW_H } from './render/canvas';
 import { attachInput, moveAxis, type InputState } from './input';
@@ -8,6 +8,8 @@ import { AudioEngine } from './render/audio';
 import { createKnowledge, updateKnowledge, markHeard } from './ai/commander/snapshot';
 import { createBrowserAsk, QuotaError } from './ai/commander/browserAsk';
 import { ScriptedCommander } from './ai/commander/scripted';
+import { expireOrders } from './ai/commander/orders';
+import { commandSquad, hostileAt } from './squadCommand';
 import { MatchStats } from './stats';
 import type { WeaponId } from './core/entity';
 import { setupMenu, type Scale } from './menu';
@@ -16,9 +18,9 @@ const TICK_MS = 1000 / 60;
 const MAX_CATCHUP = 5;
 
 /**
- * 7 seconds between decisions. Two constraints set this: free-tier rate limits
- * (~10-15 requests/minute) and the fact that orders that change faster than
- * units can carry them out are just noise.
+ * 5 seconds between decisions — 12 requests/minute, under the free tier's
+ * 15 RPM ceiling. Orders that change faster than units can carry them out are
+ * noise anyway.
  */
 const COMMAND_INTERVAL_TICKS = 300;
 /** Matches the audio engine's MAX_DIST: if you can hear it, you can map it. */
@@ -48,6 +50,7 @@ function resize(): void {
 window.addEventListener('resize', resize);
 
 let wantReload = false;
+let wantGrenade = false;
 
 function makePlayerController(inp: InputState): Controller {
   return (w, e) => {
@@ -62,6 +65,10 @@ function makePlayerController(inp: InputState): Controller {
       wantReload = false;
       startReload(w, e);
     }
+    if (wantGrenade) {
+      wantGrenade = false;
+      throwGrenade(w, e, screenToWorld(rs, inp.mouseX, inp.mouseY));
+    }
     if (inp.firing && canFire(w, e)) fire(w, e, e.aim);
   };
 }
@@ -72,20 +79,23 @@ let playerId: number;
 let commander: Commander | null = null;
 let scripted: ScriptedCommander | null = null;
 let commanderEnabled = true;
-/** Set once the endpoint reports quota exhaustion; survives across matches. */
-let quotaExhausted = false;
+
+/**
+ * Cleared after this long, so a transient rate limit doesn't disable the
+ * commander for the whole browser session.
+ */
+let quotaBlockedUntil = 0;
 
 const ask = ((base) => async (system: string, user: string) => {
   try {
     return await base(system, user);
   } catch (e) {
-    if (e instanceof QuotaError) quotaExhausted = true;
+    if (e instanceof QuotaError) quotaBlockedUntil = Date.now() + 10 * 60 * 1000;
     throw e;
   }
 })(createBrowserAsk(MODEL));
 
 let loadout: WeaponId = 'rifle';
-
 let scale: Scale = 'skirmish';
 
 /**
@@ -99,6 +109,10 @@ const SCALES: Record<Scale, { mapW: number; mapH: number; allies: number; enemie
   battle: { mapW: 96, mapH: 72, allies: 5, enemies: 6 },
 };
 
+/**
+ * `attract` puts a bot in the player's slot, so a match plays out behind the
+ * title screen instead of a frozen frame.
+ */
 function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void {
   // Varied weapons in play; the evaluation harness keeps the uniform default
   // so its published numbers stay reproducible.
@@ -106,9 +120,11 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
     ...SCALES[scale],
     weapons: 'varied',
     playerWeapon: loadout,
+    grenades: 2,
   });
   rs.anims.clear();
   rs.stats = new MatchStats();
+
   const bot = makeBotController();
   const player = makePlayerController(input);
   controllers = new Map();
@@ -118,16 +134,14 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
   }
   rs.attract = attract;
 
-  // Side 1 is the hostile squad. The player's allies stay autonomous, so the
-  // comparison the player experiences is coordinated vs uncoordinated.
-  // No commander in attract mode: nobody is watching closely enough to justify
-  // spending API quota while the title screen sits open.
-  // Once the shared budget is gone, the hostile squad keeps coordinating via
+  // Side 1 is the hostile squad. No commander in attract mode: nobody is
+  // watching closely enough to justify spending API quota while the title
+  // screen sits open. Once the budget is gone the squad keeps coordinating via
   // the scripted commander rather than reverting to fighting individually.
   commander = null;
   scripted = null;
   if (commanderEnabled && !attract) {
-    if (quotaExhausted) {
+    if (Date.now() < quotaBlockedUntil) {
       scripted = new ScriptedCommander(createKnowledge(1), COMMAND_INTERVAL_TICKS);
     } else {
       commander = new Commander(createKnowledge(1), ask, {
@@ -139,9 +153,12 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
     }
   }
 
-  // The player's side tracks contacts too — not to command with, but so the
-  // minimap can respect fog of war instead of revealing the whole map.
+  // The player's side tracks contacts too — for the minimap's fog of war, and
+  // now for validating the player's own squad orders.
   rs.knowledge = createKnowledge(0);
+  rs.commandToast = null;
+  rs.commandMark = null;
+
   rs.camera.x = world.entities[0].pos.x;
   rs.camera.y = world.entities[0].pos.y;
 }
@@ -163,7 +180,16 @@ function syncCommanderView(): void {
   if (!commander) {
     rs.commander = commanderEnabled
       ? null
-      : { enabled: false, thinking: false, calls: 0, model: MODEL, lastTick: 0, currentTick: world.tick, orders: [], error: null };
+      : {
+          enabled: false,
+          thinking: false,
+          calls: 0,
+          model: MODEL,
+          lastTick: 0,
+          currentTick: world.tick,
+          orders: [],
+          error: null,
+        };
     return;
   }
   const last = commander.lastDecision;
@@ -227,25 +253,53 @@ function frame(now: number): void {
     else wantReload = true;
   }
 
-  // C toggles the commander between matches; O hides the overlay.
+  // C toggles the hostile commander between matches; O hides the overlay.
   if (!menu.isOpen() && input.consumePress('c')) {
     commanderEnabled = !commanderEnabled;
     newMatch();
   }
+  // Queued rather than thrown here: throwing belongs inside the fixed-timestep
+  // controller, not in the render loop.
+  if (!menu.isOpen() && !paused && input.consumePress('q')) wantGrenade = true;
   if (input.consumePress('o')) rs.showCommander = !rs.showCommander;
-
   if (input.consumePress('m')) rs.muted = audio.toggleMute();
-
   if (input.consumePress('n')) rs.showMinimap = !rs.showMinimap;
+
+  // --- squad command --------------------------------------------------------
+  // Right-click is contextual: on a known hostile it suppresses, otherwise it
+  // moves. F/G/H cover the orders that need no aim point. Every one of these
+  // goes through the same validator the LLM commander does.
+  if (!menu.isOpen() && !paused && !rs.attract && rs.knowledge && !world.over) {
+    const k = rs.knowledge;
+    const m = screenToWorld(rs, input.mouseX, input.mouseY);
+    let issued: string | null = null;
+
+    if (input.consumeRightClick()) {
+      const tid = hostileAt(world, k, m);
+      issued = commandSquad(world, k, playerId, tid ? 'suppress' : 'advance_to', m, tid);
+      rs.commandMark = { x: m.x, y: m.y, life: 1 };
+    } else if (input.consumePress('f')) {
+      issued = commandSquad(world, k, playerId, 'flank', m, null);
+      rs.commandMark = { x: m.x, y: m.y, life: 1 };
+    } else if (input.consumePress('g')) {
+      issued = commandSquad(world, k, playerId, 'regroup', null, null);
+    } else if (input.consumePress('h')) {
+      issued = commandSquad(world, k, playerId, 'hold', null, null);
+    }
+
+    if (issued) rs.commandToast = { text: issued, life: 1 };
+  }
 
   // Attract-mode matches loop so the title screen never sits on a dead frame.
   if (rs.attract && world.over && !paused) newMatch(undefined, true);
+
   // Quota can run out mid-match. Swap in the scripted commander straight away
   // rather than leaving the squad uncoordinated until the next restart.
-  if (quotaExhausted && commander && !scripted && !rs.attract) {
+  if (Date.now() < quotaBlockedUntil && commander && !scripted && !rs.attract) {
     scripted = new ScriptedCommander(commander.knowledge, COMMAND_INTERVAL_TICKS);
     commander = null;
   }
+
   let steps = 0;
   while (acc >= TICK_MS && steps < MAX_CATCHUP) {
     acc -= TICK_MS;
@@ -253,11 +307,9 @@ function frame(now: number): void {
     if (!world.over && !paused) {
       step(world, controllers);
       ingestEvents(rs, world, world.events, playerId);
-      // Fire-and-forget: async mode never blocks the render loop.
       rs.stats?.ingest(world.events);
       audio.ingest(world, rs, world.events, playerId, canvas.width / rs.zoom);
-      // Line-of-sight checks are cheap but not free; six times a second is
-      // well past what the eye can follow on a 176px map.
+
       if (rs.knowledge) {
         // Muzzle flashes are checked every tick — a single shot is one event
         // and missing it would lose the contact entirely.
@@ -269,8 +321,13 @@ function frame(now: number): void {
           updateKnowledge(world, rs.knowledge, halfDiag);
         }
       }
+
+      // Fire-and-forget: async mode never blocks the render loop.
       commander?.update(world);
       scripted?.update(world);
+      // Player-issued orders need expiry too, and neither commander runs when
+      // the hostile commander is switched off.
+      if (!commander && !scripted) expireOrders(world);
     }
   }
   if (acc > TICK_MS * 10) acc = 0;
