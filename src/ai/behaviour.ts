@@ -8,6 +8,7 @@ import {
   GRENADE_RADIUS,
   GRENADE_MAX_THROW, 
   GRENADE_FUSE,
+  REVIVE_RANGE,
   type Controller,
   type World,
 } from '../core/world';
@@ -23,6 +24,32 @@ const STALEMATE_TICKS = 600; // no damage anywhere for this long -> everyone cha
 const ARRIVED = 40; // px, close enough to consider a move order complete
 const SUPPRESS_HOLD = 300; // px, how far a suppressing unit will push toward its mark
 const GRENADE_COOLDOWN = 300; // ticks between throws by the same unit
+
+/** Only go for a downed squadmate within this far — not across the map. */
+const REVIVE_SEEK_RANGE = 300;
+
+/**
+ * Nearest downed squadmate worth going to. Bots will not abandon a fight to
+ * attempt a revive, so this returns nothing while the unit is in contact and
+ * not at full strength — the revive is meant to be a choice with a cost, not a
+ * reflex that gets two units killed instead of one.
+ */
+function reviveTarget(w: World, e: Entity, inContact: boolean): Entity | null {
+  // Tightened after measurement: bots that broke off fights too readily turned
+  // ten-second matches into thirty-second ones without changing who won.
+  if (inContact && e.hp < 80) return null;
+  let best: Entity | null = null;
+  let bestD = REVIVE_SEEK_RANGE;
+  for (const o of w.entities) {
+    if (!o.alive || !o.downed || sideOf(o.team) !== sideOf(e.team)) continue;
+    const d = dist(e.pos, o.pos);
+    if (d < bestD) {
+      bestD = d;
+      best = o;
+    }
+  }
+  return best;
+}
 
 /**
  * Bots fight at a fraction of their weapon's effective range rather than a
@@ -266,6 +293,31 @@ export function makeBotController(): Controller {
 
     const target = acquireTarget(w, e);
     const until = retreatUntil.get(e.id) ?? 0;
+    // --- revive -------------------------------------------------------------
+    // Checked before engagement: a squadmate bleeding out is worth more than
+    // another few rounds downrange, provided this unit is not itself in
+    // trouble.
+    const casualty = reviveTarget(w, e, target !== null);
+    if (casualty) {
+      const d = dist(e.pos, casualty.pos);
+      if (d > REVIVE_RANGE * 0.8) {
+        e.state = 'chase';
+        setDestination(w, e, casualty.pos);
+        followPath(e);
+      } else {
+        e.state = 'reviving';
+        e.path = [];
+      }
+      // Still shoots while working — standing over a casualty is exposed
+      // enough without also being defenceless.
+      if (target) {
+        e.aim = aimWithLead(e, target, wp.bulletSpeed);
+        if (canFire(w, e) && hasFiringLane(w.map, e.pos, target.pos, e.radius)) {
+          fire(w, e, e.aim);
+        }
+      }
+      return;
+    }
     const order = e.order && w.tick < e.order.expiresTick ? e.order : null;
     if (e.order && !order) e.order = null; // expired
 

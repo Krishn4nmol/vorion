@@ -153,6 +153,63 @@ export function drawSoldier(
   ctx.restore();
 }
 
+/**
+ * Downed but not dead: prone, desaturated, with a revive ring that fills as a
+ * squadmate works. Deliberately distinct from a corpse — the difference has to
+ * be readable at a glance across the map.
+ */
+export function drawDowned(
+  ctx: CanvasRenderingContext2D,
+  e: Entity,
+  color: string,
+  fuse: number,
+  progress: number,
+): void {
+  ctx.save();
+  ctx.translate(e.pos.x, e.pos.y);
+
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(1, 2, 10, 8, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.rotate(e.aim + 1.2); // sprawled, not facing anywhere useful
+  ctx.globalAlpha = 0.75;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 8, 5.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(6.5, 1, 3.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // Bleed-out clock: a ring that empties as the timer runs down.
+  ctx.globalAlpha = 0.9;
+  ctx.strokeStyle = 'rgba(224,113,74,0.35)';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.arc(0, 0, 14, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = '#e0714a';
+  ctx.beginPath();
+  ctx.arc(0, 0, 14, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * fuse);
+  ctx.stroke();
+
+  if (progress > 0) {
+    ctx.strokeStyle = '#79cfe6';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, 18, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
 export function drawCorpse(ctx: CanvasRenderingContext2D, e: Entity): void {
   ctx.save();
   ctx.translate(e.pos.x, e.pos.y);

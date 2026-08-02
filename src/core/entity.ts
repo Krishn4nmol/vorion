@@ -10,7 +10,7 @@ export function sideOf(t: Team): 0 | 1 {
 }
 
 /** v0 bot states. The behaviour tree in ai/ replaces this in v1. */
-export type BotState = 'idle' | 'chase' | 'shoot' | 'reload' | 'retreat';
+export type BotState = 'idle' | 'chase' | 'shoot' | 'reload' | 'retreat' | 'reviving';
 export type WeaponId = 'rifle' | 'smg' | 'shotgun' | 'marksman';
 
 export interface Weapon {
@@ -70,6 +70,19 @@ export interface Entity {
   targetId: number | null;
   repathTick: number;
   grenades: number;
+  /**
+   * Bleeding out. A downed unit cannot move, shoot or be commanded, but is not
+   * dead: it still counts as a living squad member for win conditions, and can
+   * be brought back.
+   */
+  downed: boolean;
+  /** Tick at which an un-revived downed unit dies for good. */
+  bleedOutTick: number;
+  /** Progress 0..1 while a squadmate is reviving this unit. */
+  reviveProgress: number;
+  /** How many times this unit has already been brought back. */
+  revivesUsed: number;
+  downedBy: number;
 }
 
 /**
@@ -158,7 +171,12 @@ export function makeEntity(
     pathIndex: 0,
     targetId: null,
     repathTick: 0,
-    grenades: 2,
+    grenades: 0,
+    downed: false,
+    bleedOutTick: 0,
+    reviveProgress: 0,
+    revivesUsed: 0,
+    downedBy: -1,
   };
 }
 

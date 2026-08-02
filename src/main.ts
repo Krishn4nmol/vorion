@@ -11,7 +11,7 @@ import { ScriptedCommander } from './ai/commander/scripted';
 import { expireOrders } from './ai/commander/orders';
 import { commandSquad, hostileAt } from './squadCommand';
 import { MatchStats } from './stats';
-import type { WeaponId } from './core/entity';
+import { sideOf, type WeaponId } from './core/entity';
 import { setupMenu, type Scale } from './menu';
 
 const TICK_MS = 1000 / 60;
@@ -121,6 +121,7 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
     weapons: 'varied',
     playerWeapon: loadout,
     grenades: 2,
+    revives: true,
   });
   rs.anims.clear();
   rs.stats = new MatchStats();
@@ -156,6 +157,7 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
   // The player's side tracks contacts too — for the minimap's fog of war, and
   // now for validating the player's own squad orders.
   rs.knowledge = createKnowledge(0);
+  spectateId = null;
   rs.commandToast = null;
   rs.commandMark = null;
 
@@ -203,6 +205,29 @@ function syncCommanderView(): void {
     orders: last?.accepted ?? [],
     error: last?.error ?? null,
   };
+}
+
+/**
+ * Who the camera follows. Normally the player; once they are out it moves to a
+ * living squadmate so the rest of the match is watchable rather than a fixed
+ * shot of your own corpse.
+ */
+let spectateId: number | null = null;
+
+function livingSquad(): number[] {
+  return world.entities
+    .filter((e) => e.alive && !e.downed && sideOf(e.team) === 0 && e.id !== playerId)
+    .map((e) => e.id);
+}
+
+function followId(): number {
+  const me = world.entities.find((e) => e.id === playerId);
+  if (me && me.alive) return playerId;
+
+  const squad = livingSquad();
+  if (squad.length === 0) return playerId;
+  if (spectateId === null || !squad.includes(spectateId)) spectateId = squad[0];
+  return spectateId;
 }
 
 let paused = false;
@@ -264,6 +289,16 @@ function frame(now: number): void {
   if (input.consumePress('o')) rs.showCommander = !rs.showCommander;
   if (input.consumePress('m')) rs.muted = audio.toggleMute();
   if (input.consumePress('n')) rs.showMinimap = !rs.showMinimap;
+
+  // Cycling spectator targets. Left-click is free once the player is out —
+  // it is the fire button only while alive.
+  if (rs.spectating && input.consumeLeftClick()) {
+    const squad = livingSquad();
+    if (squad.length > 0) {
+      const i = spectateId === null ? -1 : squad.indexOf(spectateId);
+      spectateId = squad[(i + 1) % squad.length];
+    }
+  }
 
   // --- squad command --------------------------------------------------------
   // Right-click is contextual: on a known hostile it suppresses, otherwise it
@@ -332,8 +367,10 @@ function frame(now: number): void {
   }
   if (acc > TICK_MS * 10) acc = 0;
 
+  const cam = followId();
+  rs.spectating = cam !== playerId;
   syncCommanderView();
-  render(ctx, world, rs, playerId);
+  render(ctx, world, rs, cam);
   requestAnimationFrame(frame);
 }
 

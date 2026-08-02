@@ -7,12 +7,15 @@ export interface InputState {
   consumePress: (key: string) => boolean;
   /** True once per right-click, then cleared. */
   consumeRightClick: () => boolean;
+  /** True once per left-click, then cleared. Used only while spectating. */
+  consumeLeftClick: () => boolean;
 }
 
 export function attachInput(canvas: HTMLCanvasElement): InputState {
   const keys = new Set<string>();
   const pressed = new Set<string>();
   let rightClicked = false;
+  let leftClicked = false;
 
   const state: InputState = {
     keys,
@@ -27,6 +30,11 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
     consumeRightClick: () => {
       const r = rightClicked;
       rightClicked = false;
+      return r;
+    },
+    consumeLeftClick: () => {
+      const r = leftClicked;
+      leftClicked = false;
       return r;
     },
   };
@@ -44,6 +52,7 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
     keys.clear();
     pressed.clear();
     rightClicked = false;
+    leftClicked = false;
     state.firing = false;
   });
 
@@ -57,7 +66,10 @@ export function attachInput(canvas: HTMLCanvasElement): InputState {
   // Left fires, right commands. Previously any button set firing, so the
   // command binding would also shoot the gun.
   canvas.addEventListener('mousedown', (e) => {
-    if (e.button === 0) state.firing = true;
+    if (e.button === 0) {
+      state.firing = true;
+      leftClicked = true;
+    }
     if (e.button === 2) rightClicked = true;
   });
   window.addEventListener('mouseup', (e) => {

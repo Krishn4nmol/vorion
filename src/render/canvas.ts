@@ -11,7 +11,7 @@ import {
 } from '../core/map';
 import { dist, type Entity } from '../core/entity';
 import { isHostile, type World, type GameEvent } from '../core/world';
-import { drawSoldier, drawCorpse, stepAnim, type AnimState } from './soldier';
+import { drawSoldier, drawCorpse, drawDowned, stepAnim, type AnimState } from './soldier';
 import type { SquadKnowledge } from '../ai/commander/snapshot';
 import type { MatchStats } from '../stats';
 
@@ -89,6 +89,8 @@ export interface RenderState {
   minimapSeed: number;
   /** Per-match tallies for the end-of-match screen. */
   stats: MatchStats | null;
+  /** Set when the camera is following a squadmate because the player is out. */
+  spectating: boolean;
 }
 
 /** What the HUD knows about the AI commander. Purely presentational. */
@@ -127,6 +129,7 @@ export function createRenderState(): RenderState {
     minimapCache: null,
     minimapSeed: -1,
     stats: null,
+    spectating: false,
   };
 }
 
@@ -197,13 +200,44 @@ export function ingestEvents(
       };
       const killer = w.entities.find((x) => x.id === ev.killerId);
       rs.killFeed.push({
-        killer: label(ev.killerId),
-        victim: label(ev.victimId),
+        // Self-kill only happens when a casualty bleeds out with no known
+        // shooter — show it as bleeding out rather than as killing themselves.
+        killer: ev.killerId === ev.victimId ? '' : label(ev.killerId),
+        victim:
+          ev.killerId === ev.victimId
+            ? `${label(ev.victimId)} BLED OUT`
+            : label(ev.victimId),
         friendlyKill: !killer || killer.team !== 'enemy',
         life: 1,
       });
       if (rs.killFeed.length > 6) rs.killFeed.shift();
-    } else if (ev.type === 'explosion') {
+    } else if (ev.type === 'downed' || ev.type === 'revived') {
+      if (ev.type === 'downed') rs.shake = Math.min(1, rs.shake + 0.3);
+      const id = ev.type === 'downed' ? ev.victimId : ev.entityId;
+      const v = w.entities.find((x) => x.id === id);
+      if (v) {
+        // Hostile casualties are hostile news — labelling every downed unit
+        // "ALLY" made enemy losses read as your own.
+        const hostile = v.team === 'enemy';
+        const who =
+          v.id === playerId ? 'YOU' : `${hostile ? 'HOSTILE' : 'ALLY'} #${v.id}`;
+        const verb =
+          ev.type === 'downed'
+            ? v.id === playerId
+              ? 'ARE DOWN'
+              : 'DOWN'
+            : v.id === playerId
+              ? 'ARE UP'
+              : 'REVIVED';
+        rs.killFeed.push({
+          killer: '',
+          victim: `${who} ${verb}`,
+          friendlyKill: !hostile,
+          life: 1,
+        });
+        if (rs.killFeed.length > 6) rs.killFeed.shift();
+      }
+     } else if (ev.type === 'explosion') {
       rs.shake = Math.min(1, rs.shake + 0.9);
       rs.lights.push({ x: ev.x, y: ev.y, r: ev.radius * 2.4, life: 1 });
       // A lot of debris, thrown outward from the centre rather than in a
@@ -426,6 +460,12 @@ export function render(
     if (!e.alive) continue;
 
     const col = teamColor(e);
+
+    if (e.downed) {
+      const fuse = Math.max(0, (e.bleedOutTick - w.tick) / 420);
+      drawDowned(ctx, e, col, fuse, e.reviveProgress);
+      continue;
+    }
 
     let anim = rs.anims.get(e.id);
     if (!anim) {
@@ -700,6 +740,36 @@ function drawHud(
     return;
   }
 
+  // Spectating a squadmate: their state is shown below, so say whose it is.
+  if (rs.spectating) {
+    ctx.textAlign = 'left';
+    ctx.font = '12px ' + MONO;
+    ctx.fillStyle = C.danger;
+    ctx.fillText('ELIMINATED', 14, baseY - 34);
+    ctx.fillStyle = C.hudDim;
+    ctx.font = '10px ' + MONO;
+    ctx.fillText(`SPECTATING ALLY #${me.id}   [LMB] NEXT   [R] NEW MATCH`, 14, baseY - 20);
+  }
+
+  if (me.downed) {
+    const secs = Math.max(0, (me.bleedOutTick - w.tick) / 60);
+    ctx.textAlign = 'center';
+    ctx.font = '18px ' + MONO;
+    ctx.fillStyle = C.danger;
+    ctx.fillText('DOWN', W / 2, H / 2 - 30);
+    ctx.font = '11px ' + MONO;
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText(
+      me.reviveProgress > 0
+        ? `BEING REVIVED — ${Math.round(me.reviveProgress * 100)}%`
+        : `BLEEDING OUT — ${secs.toFixed(0)}s`,
+      W / 2,
+      H / 2 - 10,
+    );
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    return;
+  }
+
   // health
   ctx.fillStyle = 'rgba(255,255,255,0.08)';
   ctx.fillRect(14, baseY - 10, 150, 6);
@@ -964,7 +1034,7 @@ function drawScoreboard(
     .filter((e) => e.team !== 'enemy')
     .sort((a, b) => (a.id === followId ? -1 : b.id === followId ? 1 : a.id - b.id));
 
-  const panelW = 420;
+  const panelW = 480;
   const panelH = 132 + rows.length * 22;
   const px = (W - panelW) / 2;
   const py = (H - panelH) / 2;
@@ -992,8 +1062,9 @@ function drawScoreboard(
   // column headers
   const colId = px + 24;
   const colKills = px + 210;
-  const colDmg = px + 280;
-  const colAcc = px + 370;
+  const colRev = px + 278;
+  const colDmg = px + 356;
+  const colAcc = px + 456;
   let y = py + 88;
 
   ctx.font = '9px ' + MONO;
@@ -1002,6 +1073,7 @@ function drawScoreboard(
   ctx.fillText('UNIT', colId, y);
   ctx.textAlign = 'right';
   ctx.fillText('KILLS', colKills, y);
+  ctx.fillText('REVIVES', colRev, y);
   ctx.fillText('DAMAGE', colDmg, y);
   ctx.fillText('ACCURACY', colAcc, y);
 
@@ -1024,6 +1096,12 @@ function drawScoreboard(
 
     ctx.textAlign = 'right';
     ctx.fillText(String(s?.kills ?? 0), colKills, y);
+    // Zero revives shows as a dash: a column of noughts reads as failure when
+    // it usually just means nobody needed picking up.
+    const rev = s?.revives ?? 0;
+    ctx.fillStyle = rev > 0 ? C.accent : ctx.fillStyle;
+    ctx.fillText(rev > 0 ? String(rev) : '—', colRev, y);
+    ctx.fillStyle = isMe ? C.player : e.alive ? C.ally : 'rgba(121,207,230,0.4)';
     ctx.fillText(String(Math.round(s?.damageDealt ?? 0)), colDmg, y);
     const acc = stats ? stats.accuracy(e.id) : 0;
     ctx.fillText(s?.shotsFired ? `${(acc * 100).toFixed(0)}%` : '—', colAcc, y);
@@ -1102,8 +1180,16 @@ function drawKillFeed(ctx: CanvasRenderingContext2D, rs: RenderState): void {
   for (const k of rs.killFeed) {
     // Fade only over the final third of the lifetime, so entries stay legible
     // while they matter and then leave cleanly.
-    const alpha = Math.min(1, k.life * 3);
-    ctx.globalAlpha = alpha;
+    ctx.globalAlpha = Math.min(1, k.life * 3);
+
+    // Status lines (downed, revived, bled out) carry no killer, so they render
+    // as a single phrase rather than an arrow with nothing on its left.
+    if (k.killer === '') {
+      ctx.fillStyle = k.friendlyKill ? C.ally : C.enemy;
+      ctx.fillText(k.victim, x, y);
+      y += 15;
+      continue;
+    }
 
     ctx.fillStyle = k.friendlyKill ? C.ally : C.enemy;
     ctx.fillText(k.killer, x, y);

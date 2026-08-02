@@ -15,6 +15,8 @@ export interface EntityStats {
   damageTaken: number;
   shotsFired: number;
   shotsHit: number;
+  revives: number;
+  timesDowned: number;
 }
 
 function blank(): EntityStats {
@@ -25,6 +27,8 @@ function blank(): EntityStats {
     damageTaken: 0,
     shotsFired: 0,
     shotsHit: 0,
+    revives: 0,
+    timesDowned: 0,
   };
 }
 
@@ -44,17 +48,28 @@ export class MatchStats {
   ingest(events: GameEvent[]): void {
     for (const ev of events) {
       if (ev.type === 'fire') {
-        this.get(ev.shooterId).shotsFired++;
+        // Counted per projectile, not per trigger pull: a shotgun throws seven
+        // pellets, any of which can hit, so counting one shot against seven
+        // possible hits produced accuracy well above 100%.
+        this.get(ev.shooterId).shotsFired += ev.pellets;
       } else if (ev.type === 'damage') {
-        // One bullet produces exactly one damage event, so counting these
-        // gives hits without tracking individual projectiles.
         const shooter = this.get(ev.shooterId);
         shooter.damageDealt += ev.amount;
-        shooter.shotsHit++;
+        // Blast damage counts toward damage dealt but not accuracy — a grenade
+        // hitting three people is not three accurate shots.
+        if (!ev.explosive) shooter.shotsHit++;
         this.get(ev.victimId).damageTaken += ev.amount;
       } else if (ev.type === 'death') {
         this.get(ev.victimId).deaths++;
-        if (ev.killerId !== ev.victimId) this.get(ev.killerId).kills++;
+        // Friendly fire is not an achievement. Counting it made squad kill
+        // totals exceed the number of enemies on the map.
+        if (!ev.friendly) this.get(ev.killerId).kills++;
+      } else if (ev.type === 'downed') {
+        // Credited to the medic, not the casualty: reviving is the action
+        // worth reporting, and it is the one the player chooses to take.
+        this.get(ev.victimId).timesDowned++;
+      } else if (ev.type === 'revived') {
+        this.get(ev.medicId).revives++;
       }
     }
   }

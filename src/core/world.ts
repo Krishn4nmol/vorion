@@ -26,9 +26,24 @@ export const TICK_HZ = 60;
 export const DT = 1 / TICK_HZ;
 
 export type GameEvent =
-  | { type: 'fire'; tick: number; shooterId: number }
-  | { type: 'damage'; tick: number; victimId: number; shooterId: number; amount: number }
-  | { type: 'death'; tick: number; victimId: number; killerId: number }
+  | { type: 'fire'; tick: number; shooterId: number; pellets: number }
+  | {
+      type: 'damage';
+      tick: number;
+      victimId: number;
+      shooterId: number;
+      amount: number;
+      /** Blast damage: counted for damage totals, but never for accuracy. */
+      explosive?: boolean;
+    }
+  | {
+      type: 'death';
+      tick: number;
+      victimId: number;
+      killerId: number;
+      /** Same-side kill. Counted as a death, but never credited as a kill. */
+      friendly: boolean;
+    }
   | { type: 'reload'; tick: number; entityId: number }
   /**
    * Where a bullet stopped. Purely informational — nothing in the simulation
@@ -36,7 +51,9 @@ export type GameEvent =
    * wall, since only entity hits produce damage.
    */
   | { type: 'impact'; tick: number; x: number; y: number; onEntity: boolean }
-  | { type: 'explosion'; tick: number; x: number; y: number; radius: number };
+  | { type: 'explosion'; tick: number; x: number; y: number; radius: number }
+  | { type: 'downed'; tick: number; victimId: number; shooterId: number }
+  | { type: 'revived'; tick: number; entityId: number; medicId: number };
 
 export interface World {
   tick: number;
@@ -49,6 +66,7 @@ export interface World {
   events: GameEvent[]; // cleared each tick; drained by render, eval and trace logging
   nextId: number;
   over: boolean;
+  revives: boolean;
 }
 
 export interface WorldOptions {
@@ -65,11 +83,12 @@ export interface WorldOptions {
   playerWeapon?: WeaponId;
   /** Grenades per unit. 0 keeps bot behaviour identical to the eval baseline. */
   grenades?: number;
+  revives?: boolean;
 }
 
 export function createWorld(seed: number, opts: WorldOptions = {}): World {
   const { mapW = 64, mapH = 48, allies = 3, enemies = 4, weapons = 'uniform',
-  playerWeapon, grenades = 0,} = opts;
+  playerWeapon, grenades = 0, revives = false,} = opts;
   const rng = new SeededRNG(seed);
   const map = generateMap(mapW, mapH, rng);
 
@@ -84,6 +103,7 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
     events: [],
     nextId: 1,
     over: false,
+    revives,
   };
 
   const pickWeapon = (team: Entity['team']): Entity['weapon'] => {
@@ -169,7 +189,132 @@ export function fire(w: World, e: Entity, angle: number): void {
   wp.ammo--;
   wp.lastFiredTick = w.tick;
   e.aim = angle;
-  w.events.push({ type: 'fire', tick: w.tick, shooterId: e.id });
+  // Pellet count travels with the event so accuracy can be computed per
+  // projectile. A shotgun throws seven, and counting one shot against seven
+  // possible hits produced accuracy above 100%.
+  w.events.push({ type: 'fire', tick: w.tick, shooterId: e.id, pellets: wp.pellets });
+}
+
+export const BLEED_OUT_TICKS = 420; // 7s to reach a downed squadmate
+export const REVIVE_RANGE = 34; // px — you must stand over them
+export const REVIVE_TICKS = 190; // ~3.2s of standing still, exposed
+/**
+ * A unit can be brought back this many times. Without a cap, two squads revive
+ * each other faster than they kill and matches triple in length — measured at
+ * 620 -> 2012 ticks with unlimited revives.
+ */
+export const MAX_REVIVES = 1;
+
+/**
+ * Applies damage, and routes it to a downed state rather than death when the
+ * mode is on. Every damage path funnels through here so bullets, blasts and
+ * anything added later share one definition of dying.
+ */
+export function applyDamage(
+  w: World,
+  victim: Entity,
+  amount: number,
+  shooterId: number,
+  explosive = false,
+): void {
+  if (!victim.alive) return;
+
+  // A downed unit takes no further damage. Otherwise stray fire in a firefight
+  // executes them instantly and the revive window never exists.
+  if (victim.downed) return;
+
+  victim.hp -= amount;
+  w.events.push({
+    type: 'damage',
+    tick: w.tick,
+    victimId: victim.id,
+    shooterId,
+    amount,
+    explosive,
+  });
+  if (victim.hp > 0) return;
+
+  victim.hp = 0;
+
+  if (w.revives && victim.revivesUsed < MAX_REVIVES) {
+    victim.downed = true;
+    victim.downedBy = shooterId;
+    victim.bleedOutTick = w.tick + BLEED_OUT_TICKS;
+    victim.reviveProgress = 0;
+    victim.vel.x = 0;
+    victim.vel.y = 0;
+    victim.path = [];
+    w.events.push({ type: 'downed', tick: w.tick, victimId: victim.id, shooterId });
+    return;
+  }
+
+  victim.alive = false;
+  w.events.push({
+    type: 'death',
+    tick: w.tick,
+    victimId: victim.id,
+    killerId: shooterId,
+    friendly: isFriendlyKill(w, victim, shooterId),
+  });
+}
+
+/** True when the killer is on the victim's own side, or is the victim. */
+function isFriendlyKill(w: World, victim: Entity, killerId: number): boolean {
+  if (killerId === victim.id) return true;
+  const killer = w.entities.find((x) => x.id === killerId);
+  return !killer || sideOf(killer.team) === sideOf(victim.team);
+}
+
+/**
+ * Bleed-out and revives. A unit standing within range of a downed squadmate
+ * revives it; progress decays if they leave, so an interrupted revive is a
+ * setback rather than a restart.
+ */
+function stepDowned(w: World): void {
+  if (!w.revives) return;
+
+  for (const e of w.entities) {
+    if (!e.alive || !e.downed) continue;
+
+    const medic = w.entities.find(
+      (o) =>
+        o.alive &&
+        !o.downed &&
+        o.id !== e.id &&
+        sideOf(o.team) === sideOf(e.team) &&
+        dist(o.pos, e.pos) <= REVIVE_RANGE,
+    );
+
+    if (medic) {
+      e.reviveProgress += 1 / REVIVE_TICKS;
+      if (e.reviveProgress >= 1) {
+        e.downed = false;
+        e.reviveProgress = 0;
+        e.revivesUsed++;
+        e.downedBy = -1;
+        e.hp = Math.round(e.maxHp * 0.45); // back up, but fragile // back up, but fragile
+        e.weapon.ammo = e.weapon.magSize;
+        w.events.push({ type: 'revived', tick: w.tick, entityId: e.id, medicId: medic.id });
+      }
+      continue;
+    }
+
+    e.reviveProgress = Math.max(0, e.reviveProgress - 0.4 / REVIVE_TICKS);
+    if (w.tick >= e.bleedOutTick) {
+      e.alive = false;
+      e.downed = false;
+      // Credited to whoever downed them: bleeding out is the delayed result of
+      // being shot, not a suicide.
+      const killerId = e.downedBy >= 0 ? e.downedBy : e.id;
+      w.events.push({
+        type: 'death',
+        tick: w.tick,
+        victimId: e.id,
+        killerId,
+        friendly: isFriendlyKill(w, e, killerId),
+      });
+    }
+  }
 }
 
 export const GRENADE_FUSE = 130; // ~2.2s
@@ -246,20 +391,7 @@ function stepGrenades(w: World): void {
       if (!lineOfSight(w.map, g.pos, e.pos)) continue;
 
       const falloff = 1 - d / GRENADE_RADIUS;
-      const amount = Math.round(12 + 48 * falloff * falloff);
-      e.hp -= amount;
-      w.events.push({
-        type: 'damage',
-        tick: w.tick,
-        victimId: e.id,
-        shooterId: g.ownerId,
-        amount,
-      });
-      if (e.hp <= 0) {
-        e.hp = 0;
-        e.alive = false;
-        w.events.push({ type: 'death', tick: w.tick, victimId: e.id, killerId: g.ownerId });
-      }
+      applyDamage(w, e, Math.round(12 + 48 * falloff * falloff), g.ownerId, true);
     }
   }
 
@@ -294,12 +426,14 @@ export function step(w: World, controllers: Map<number, Controller>): void {
   w.events.length = 0;
 
   stepGrenades(w);
+  stepDowned(w);
   finishReloads(w);
 
   for (const e of w.entities) {
     if (!e.alive) continue;
     e.vel.x = 0;
     e.vel.y = 0;
+    if (e.downed) continue;
     const c = controllers.get(e.id);
     if (c) c(w, e);
   }
@@ -318,25 +452,8 @@ export function step(w: World, controllers: Map<number, Controller>): void {
       y: hit.bullet.pos.y,
       onEntity: victim !== null,
     });
-    if (!victim || !victim.alive) continue;
-    victim.hp -= hit.bullet.damage;
-    w.events.push({
-      type: 'damage',
-      tick: w.tick,
-      victimId: victim.id,
-      shooterId: hit.bullet.ownerId,
-      amount: hit.bullet.damage,
-    });
-    if (victim.hp <= 0) {
-      victim.hp = 0;
-      victim.alive = false;
-      w.events.push({
-        type: 'death',
-        tick: w.tick,
-        victimId: victim.id,
-        killerId: hit.bullet.ownerId,
-      });
-    }
+    if (!victim) continue;
+    applyDamage(w, victim, hit.bullet.damage, hit.bullet.ownerId);
   }
 
   const friendliesLeft = w.entities.some((e) => e.alive && e.team !== 'enemy');
