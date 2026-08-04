@@ -67,6 +67,7 @@ export interface World {
   nextId: number;
   over: boolean;
   revives: boolean;
+  endless: boolean;
 }
 
 export interface WorldOptions {
@@ -84,11 +85,12 @@ export interface WorldOptions {
   /** Grenades per unit. 0 keeps bot behaviour identical to the eval baseline. */
   grenades?: number;
   revives?: boolean;
+  endless?: boolean;
 }
 
 export function createWorld(seed: number, opts: WorldOptions = {}): World {
   const { mapW = 64, mapH = 48, allies = 3, enemies = 4, weapons = 'uniform',
-  playerWeapon, grenades = 0, revives = false,} = opts;
+  playerWeapon, grenades = 0, revives = false, endless = false,} = opts;
   const rng = new SeededRNG(seed);
   const map = generateMap(mapW, mapH, rng);
 
@@ -104,6 +106,7 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
     nextId: 1,
     over: false,
     revives,
+    endless,
   };
 
   const pickWeapon = (team: Entity['team']): Entity['weapon'] => {
@@ -132,6 +135,24 @@ export function createWorld(seed: number, opts: WorldOptions = {}): World {
   }
 
   return world;
+}
+
+/**
+ * Adds a unit mid-match. Used by the survival spawner; nothing in the
+ * evaluation calls it, so match composition there is still fixed at creation.
+ */
+export function spawnUnit(
+  w: World,
+  team: Entity['team'],
+  tile: { x: number; y: number },
+  weapon: WeaponId,
+  grenades = 0,
+): Entity {
+  const t = nearestFloor(w.map, tile.x, tile.y);
+  const e = makeEntity(w.nextId++, team, tileCenter(t.x, t.y), makeWeapon(weapon));
+  e.grenades = grenades;
+  w.entities.push(e);
+  return e;
 }
 
 export function getEntity(w: World, id: number | null): Entity | null {
@@ -458,7 +479,8 @@ export function step(w: World, controllers: Map<number, Controller>): void {
 
   const friendliesLeft = w.entities.some((e) => e.alive && e.team !== 'enemy');
   const enemiesLeft = w.entities.some((e) => e.alive && e.team === 'enemy');
-  if (!friendliesLeft || !enemiesLeft) w.over = true;
+  // In endless mode an empty battlefield is an intermission, not a result.
+  if (!friendliesLeft || (!enemiesLeft && !w.endless)) w.over = true;
 
   w.tick++;
 }

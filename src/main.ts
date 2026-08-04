@@ -11,6 +11,7 @@ import { ScriptedCommander } from './ai/commander/scripted';
 import { expireOrders } from './ai/commander/orders';
 import { commandSquad, hostileAt } from './squadCommand';
 import { MatchStats } from './stats';
+import { createSurvival, startWave, updateSurvival, type SurvivalState } from './survival';
 import { sideOf, type WeaponId } from './core/entity';
 import { setupMenu, type Scale } from './menu';
 
@@ -77,6 +78,8 @@ let world: World;
 let controllers: Map<number, Controller>;
 let playerId: number;
 let commander: Commander | null = null;
+/** Kept so wave reinforcements can be given the same controller instance. */
+let botController: Controller = makeBotController();
 let scripted: ScriptedCommander | null = null;
 let commanderEnabled = true;
 
@@ -107,7 +110,11 @@ let scale: Scale = 'skirmish';
 const SCALES: Record<Scale, { mapW: number; mapH: number; allies: number; enemies: number }> = {
   skirmish: { mapW: 64, mapH: 48, allies: 3, enemies: 4 },
   battle: { mapW: 96, mapH: 72, allies: 5, enemies: 6 },
+  // Survival starts empty: the wave director spawns every hostile.
+  survival: { mapW: 64, mapH: 48, allies: 3, enemies: 0 },
 };
+
+let survival: SurvivalState | null = null;
 
 /**
  * `attract` puts a bot in the player's slot, so a match plays out behind the
@@ -116,22 +123,38 @@ const SCALES: Record<Scale, { mapW: number; mapH: number; allies: number; enemie
 function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void {
   // Varied weapons in play; the evaluation harness keeps the uniform default
   // so its published numbers stay reproducible.
+  const isSurvival = scale === 'survival' && !attract;
   world = createWorld(seed, {
     ...SCALES[scale],
     weapons: 'varied',
     playerWeapon: loadout,
     grenades: 2,
     revives: true,
+    endless: isSurvival,
   });
+  survival = isSurvival ? createSurvival() : null;
+  if (survival) startWave(world, survival);
   rs.anims.clear();
   rs.stats = new MatchStats();
 
-  const bot = makeBotController();
+  botController = makeBotController();
+  const bot = botController;
   const player = makePlayerController(input);
   controllers = new Map();
   playerId = world.entities.find((e) => e.team === 'player')!.id;
   for (const e of world.entities) {
     controllers.set(e.id, e.id === playerId && !attract ? player : bot);
+  }
+  // The title screen never runs survival, so fall back to a normal skirmish
+  // rather than an empty map with nobody to fight.
+  if (attract && scale === 'survival') {
+    world = createWorld(seed, {
+      ...SCALES.skirmish,
+      weapons: 'varied',
+      grenades: 2,
+      revives: true,
+    });
+    survival = null;
   }
   rs.attract = attract;
 
@@ -341,6 +364,14 @@ function frame(now: number): void {
     steps++;
     if (!world.over && !paused) {
       step(world, controllers);
+
+      // Wave arrivals are new entities; without a controller they stand still.
+      if (survival) {
+        for (const e of world.entities) {
+          if (!controllers.has(e.id)) controllers.set(e.id, botController);
+        }
+      }
+
       ingestEvents(rs, world, world.events, playerId);
       rs.stats?.ingest(world.events);
       audio.ingest(world, rs, world.events, playerId, canvas.width / rs.zoom);
@@ -360,6 +391,7 @@ function frame(now: number): void {
       // Fire-and-forget: async mode never blocks the render loop.
       commander?.update(world);
       scripted?.update(world);
+      if (survival) updateSurvival(world, survival, rs.stats);
       // Player-issued orders need expiry too, and neither commander runs when
       // the hostile commander is switched off.
       if (!commander && !scripted) expireOrders(world);
@@ -370,6 +402,7 @@ function frame(now: number): void {
   const cam = followId();
   rs.spectating = cam !== playerId;
   syncCommanderView();
+  rs.survival = survival;
   render(ctx, world, rs, cam);
   requestAnimationFrame(frame);
 }

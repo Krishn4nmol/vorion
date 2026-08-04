@@ -14,6 +14,7 @@ import { isHostile, type World, type GameEvent } from '../core/world';
 import { drawSoldier, drawCorpse, drawDowned, stepAnim, type AnimState } from './soldier';
 import type { SquadKnowledge } from '../ai/commander/snapshot';
 import type { MatchStats } from '../stats';
+import type { SurvivalState } from '../survival';
 
 /**
  * Palette. Cold slate arena, ice-blue friendlies, ember enemies. Kept in one
@@ -91,6 +92,8 @@ export interface RenderState {
   stats: MatchStats | null;
   /** Set when the camera is following a squadmate because the player is out. */
   spectating: boolean;
+  /** Wave director state, or null outside survival mode. */
+  survival: SurvivalState | null;
 }
 
 /** What the HUD knows about the AI commander. Purely presentational. */
@@ -130,8 +133,9 @@ export function createRenderState(): RenderState {
     minimapSeed: -1,
     stats: null,
     spectating: false,
+    survival: null,
   };
-}
+};
 
 /** Canvas-space pixels -> world coordinates. Used for mouse aim. */
 export function screenToWorld(rs: RenderState, sx: number, sy: number): { x: number; y: number } {
@@ -708,6 +712,7 @@ function drawHud(
   drawMinimap(ctx, w, rs, followId);
   drawCommanderPanel(ctx, rs, W);
   drawKillFeed(ctx, rs);
+  drawSurvival(ctx, rs, W, H);
   if (rs.commandToast) {
     ctx.globalAlpha = Math.min(1, rs.commandToast.life * 3);
     ctx.textAlign = 'center';
@@ -1205,4 +1210,43 @@ function drawKillFeed(ctx: CanvasRenderingContext2D, rs: RenderState): void {
     y += 15;
   }
   ctx.globalAlpha = 1;
+}
+
+/**
+ * Wave counter, score, and the intermission countdown. Centred at the top
+ * because in survival the wave number is the thing you are actually playing
+ * against — it belongs where the eye already goes.
+ */
+function drawSurvival(
+  ctx: CanvasRenderingContext2D,
+  rs: RenderState,
+  W: number,
+  H: number,
+): void {
+  const s = rs.survival;
+  if (!s) return;
+
+  ctx.textAlign = 'center';
+  ctx.font = '20px ' + MONO;
+  ctx.fillStyle = C.accent;
+  ctx.fillText(`WAVE ${s.wave}`, W / 2, 30);
+
+  ctx.font = '11px ' + MONO;
+  ctx.fillStyle = C.hudText;
+  ctx.fillText(s.score.toLocaleString(), W / 2, 48);
+
+  // Intermission: the only moment in the mode where nothing is shooting, so
+  // it gets the whole centre of the screen rather than a corner.
+  if (s.countdown > 0) {
+    const secs = Math.ceil(s.countdown / 60);
+    ctx.font = '15px ' + MONO;
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText('SECTOR CLEAR — SQUAD RECOVERING', W / 2, H / 2 - 40);
+    ctx.font = '34px ' + MONO;
+    ctx.fillStyle = C.accent;
+    ctx.fillText(String(secs), W / 2, H / 2);
+    ctx.font = '11px ' + MONO;
+    ctx.fillStyle = C.hudDim;
+    ctx.fillText(`WAVE ${s.wave + 1} INBOUND`, W / 2, H / 2 + 22);
+  }
 }

@@ -1,6 +1,6 @@
 import type { WeaponId } from './core/entity';
 
-export type Scale = 'skirmish' | 'battle';
+export type Scale = 'skirmish' | 'battle' | 'survival';
 
 export interface MenuHooks {
   onStart: (weapon: WeaponId, scale: Scale) => void;
