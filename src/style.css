@@ -144,3 +144,31 @@ html, body {
   border-color: #79cfe6;
   color: #eef6fa;
 }
+
+.career {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px 18px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(121, 207, 230, 0.1);
+  font-size: 10px;
+}
+
+.career:empty {
+  display: none;
+}
+
+.career div {
+  display: flex;
+  justify-content: space-between;
+}
+
+.career span {
+  color: #5d6b7d;
+}
+
+.career b {
+  color: #79cfe6;
+  font-weight: 600;
+}

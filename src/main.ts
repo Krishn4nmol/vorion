@@ -12,6 +12,7 @@ import { expireOrders } from './ai/commander/orders';
 import { commandSquad, hostileAt } from './squadCommand';
 import { MatchStats } from './stats';
 import { createSurvival, startWave, updateSurvival, type SurvivalState } from './survival';
+import { loadProfile, recordMatch, type Profile } from './profile';
 import { sideOf, type WeaponId } from './core/entity';
 import { setupMenu, type Scale } from './menu';
 
@@ -116,6 +117,10 @@ const SCALES: Record<Scale, { mapW: number; mapH: number; allies: number; enemie
 
 let survival: SurvivalState | null = null;
 
+const profile: Profile = loadProfile();
+/** Guards against folding the same match into the career record every frame. */
+let recorded = false;
+
 /**
  * `attract` puts a bot in the player's slot, so a match plays out behind the
  * title screen instead of a frozen frame.
@@ -181,6 +186,8 @@ function newMatch(seed = Math.floor(Math.random() * 1e9), attract = false): void
   // now for validating the player's own squad orders.
   rs.knowledge = createKnowledge(0);
   spectateId = null;
+  recorded = false;
+  rs.records = [];
   rs.commandToast = null;
   rs.commandMark = null;
 
@@ -398,6 +405,22 @@ function frame(now: number): void {
     }
   }
   if (acc > TICK_MS * 10) acc = 0;
+
+  // Fold the finished match into the career record exactly once. Attract-mode
+  // matches are not the player's and never count.
+  if (world.over && !recorded && !rs.attract) {
+    recorded = true;
+    const s = rs.stats?.get(playerId);
+    rs.records = recordMatch(profile, {
+      won: world.entities.some((e) => e.alive && e.team !== 'enemy'),
+      kills: s?.kills ?? 0,
+      revives: s?.revives ?? 0,
+      shotsFired: s?.shotsFired ?? 0,
+      shotsHit: s?.shotsHit ?? 0,
+      wave: survival?.wave,
+      score: survival?.score,
+    });
+  }
 
   const cam = followId();
   rs.spectating = cam !== playerId;
