@@ -94,6 +94,8 @@ export interface RenderState {
   spectating: boolean;
   /** Wave director state, or null outside survival mode. */
   survival: SurvivalState | null;
+  /** Career records broken by the match just finished. */
+  records: string[];
 }
 
 /** What the HUD knows about the AI commander. Purely presentational. */
@@ -134,6 +136,7 @@ export function createRenderState(): RenderState {
     stats: null,
     spectating: false,
     survival: null,
+    records: [],
   };
 };
 
@@ -1126,6 +1129,18 @@ function drawScoreboard(
   ctx.font = '11px ' + MONO;
   ctx.fillStyle = C.hudDim;
   ctx.fillText('[R] NEW MATCH      [ESC] MENU', W / 2, py + panelH - 18);
+
+  // Records sit below the panel rather than inside it: they are the reason to
+  // play again, so they should be the last thing read.
+  if (rs.records.length > 0) {
+    let ry = py + panelH + 26;
+    ctx.font = '12px ' + MONO;
+    for (const r of rs.records) {
+      ctx.fillStyle = C.accent;
+      ctx.fillText(`★ NEW ${r}`, W / 2, ry);
+      ry += 18;
+    }
+  }
 }
 
 /**

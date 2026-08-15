@@ -1,4 +1,5 @@
 import type { WeaponId } from './core/entity';
+import { loadProfile } from './profile';
 
 export type Scale = 'skirmish' | 'battle' | 'survival';
 
@@ -31,10 +32,11 @@ export function setupMenu(hooks: MenuHooks): Menu {
   const title = document.getElementById('menu-title');
   const weapon = document.getElementById('weapon') as HTMLSelectElement | null;
   const scale = document.getElementById('scale') as HTMLSelectElement | null;
+  const career = document.getElementById('career');
 
-  if (!root || !startBtn || !restartBtn || !volume || !title || !weapon || !scale) {
+  if (!root || !startBtn || !restartBtn || !volume || !title || !weapon || !scale || !career) {
     throw new Error(
-      'menu markup missing — need #menu, #start, #restart, #volume, #menu-title, #weapon, #scale',
+      'menu markup missing — need #menu, #start, #restart, #volume, #menu-title, #weapon, #scale, #career',
     );
   }
 
@@ -87,6 +89,22 @@ export function setupMenu(hooks: MenuHooks): Menu {
 
   return {
     open(isPaused: boolean): void {
+      // Re-read on every open: the previous match may have set a record, and
+      // the title screen is where you look for it.
+      const p = loadProfile();
+      const rows: [string, string | number][] = [
+        ['BEST WAVE', p.bestWave || '—'],
+        ['HIGH SCORE', p.bestScore ? p.bestScore.toLocaleString() : '—'],
+        ['MATCHES WON', `${p.matchesWon}/${p.matchesPlayed}`],
+        ['TOTAL KILLS', p.totalKills],
+        ['REVIVES', p.totalRevives],
+        ['BEST ACCURACY', p.bestAccuracy ? `${(p.bestAccuracy * 100).toFixed(0)}%` : '—'],
+      ];
+      career.innerHTML =
+        p.matchesPlayed === 0
+          ? ''
+          : rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('');
+
       paused = isPaused;
       openState = true;
       startBtn.textContent = isPaused ? 'RESUME' : 'PLAY';
