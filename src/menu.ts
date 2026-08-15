@@ -94,7 +94,6 @@ export function setupMenu(hooks: MenuHooks): Menu {
       const p = loadProfile();
       const rows: [string, string | number][] = [
         ['BEST WAVE', p.bestWave || '—'],
-        ['HIGH SCORE', p.bestScore ? p.bestScore.toLocaleString() : '—'],
         ['MATCHES WON', `${p.matchesWon}/${p.matchesPlayed}`],
         ['TOTAL KILLS', p.totalKills],
         ['REVIVES', p.totalRevives],

@@ -1241,14 +1241,12 @@ function drawSurvival(
   const s = rs.survival;
   if (!s) return;
 
+  // The wave number is the score. A separate points total was an arbitrary
+  // second number measuring the same thing.
   ctx.textAlign = 'center';
   ctx.font = '20px ' + MONO;
   ctx.fillStyle = C.accent;
   ctx.fillText(`WAVE ${s.wave}`, W / 2, 30);
-
-  ctx.font = '11px ' + MONO;
-  ctx.fillStyle = C.hudText;
-  ctx.fillText(s.score.toLocaleString(), W / 2, 48);
 
   // Intermission: the only moment in the mode where nothing is shooting, so
   // it gets the whole centre of the screen rather than a corner.

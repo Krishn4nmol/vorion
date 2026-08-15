@@ -418,7 +418,6 @@ function frame(now: number): void {
       shotsFired: s?.shotsFired ?? 0,
       shotsHit: s?.shotsHit ?? 0,
       wave: survival?.wave,
-      score: survival?.score,
     });
   }
 
