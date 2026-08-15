@@ -28,8 +28,15 @@ function blank(): Profile {
   };
 }
 
+/**
+ * One object for the whole page load. Both the menu and the game loop read
+ * through this, so mutations from `recordMatch` are visible to both — which
+ * localStorage used to provide and no longer does.
+ */
+const session: Profile = blank();
+
 export function loadProfile(): Profile {
-  return blank();
+  return session;
 }
 
 export interface MatchOutcome {
