@@ -33,7 +33,7 @@ function blank(): Profile {
  * through this, so mutations from `recordMatch` are visible to both — which
  * localStorage used to provide and no longer does.
  */
-const session: Profile = 
+const session: Profile = blank();
 
 export function loadProfile(): Profile {
   return session;
